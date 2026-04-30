@@ -1,13 +1,26 @@
 import React, { useState } from 'react';
 import { LicenseInfo } from '../../shared/types';
+import { PURCHASE_URL, PRICE_LABEL, PRICING_TAGLINE, type ProFeature } from '../../shared/pro-features';
 
 interface Props {
   license: LicenseInfo | null;
   onClose: () => void;
   onActivated: () => void;
+  // When the modal is opened by a feature gate (rather than the gear icon),
+  // pass the reason so the user sees what they were trying to do.
+  prompt?: { feature: ProFeature; reason: string } | null;
 }
 
-export function LicenseModal({ license, onClose, onActivated }: Props) {
+const PRO_BENEFITS = [
+  'Organize unlimited files',
+  'Local AI search across your library',
+  'DataHoarder mode (PDFs, docs, audio, design)',
+  'Apple Photos library import',
+  'Auto-cluster docs into smart folders',
+  'Watch folders for hands-off organizing',
+];
+
+export function LicenseModal({ license, onClose, onActivated, prompt }: Props) {
   const [key, setKey] = useState('');
   const [email, setEmail] = useState('');
   const [busy, setBusy] = useState(false);
@@ -74,9 +87,31 @@ export function LicenseModal({ license, onClose, onActivated }: Props) {
         ) : (
           <div style={styles.body}>
             <div style={styles.freeBadge}>Free Tier</div>
-            <div style={styles.hint}>Enter your license key to unlock Pro features.</div>
+            {prompt && (
+              <div style={styles.promptBanner}>{prompt.reason}</div>
+            )}
+            <ul style={styles.benefitList}>
+              {PRO_BENEFITS.map((b) => (
+                <li key={b} style={styles.benefitItem}>
+                  <span style={styles.benefitCheck}>✓</span>
+                  {b}
+                </li>
+              ))}
+            </ul>
+            <button
+              className="btn-primary"
+              onClick={() => window.electronAPI.openPath(PURCHASE_URL)}
+              style={{ width: '100%', marginTop: 4 }}
+            >
+              Get Pro for {PRICE_LABEL}
+            </button>
+            <div style={styles.tagline}>{PRICING_TAGLINE}</div>
+
+            <div style={styles.divider} />
+
+            <div style={styles.hint}>Already bought? Enter your key:</div>
             <input
-              style={{ ...styles.input, marginTop: 12 }}
+              style={styles.input}
               placeholder="PXLP-XXXX-XXXX-XXXX-XXXX"
               value={key}
               onChange={e => setKey(e.target.value.toUpperCase())}
@@ -93,22 +128,13 @@ export function LicenseModal({ license, onClose, onActivated }: Props) {
             />
             {error && <div style={styles.errorMsg}>{error}</div>}
             <button
-              className="btn-primary"
+              className="btn-secondary"
               onClick={handleActivate}
               disabled={busy}
-              style={{ width: '100%', marginTop: 8 }}
+              style={{ width: '100%' }}
             >
               {busy ? 'Activating…' : 'Activate'}
             </button>
-            <div style={styles.buyHint}>
-              Don't have a key?{' '}
-              <span
-                style={{ color: 'var(--accent)', cursor: 'pointer' }}
-                onClick={() => window.electronAPI.openPath('https://pixelpusher.app/#pricing')}
-              >
-                Get Pro for $12
-              </span>
-            </div>
           </div>
         )}
       </div>
@@ -161,4 +187,24 @@ const styles: Record<string, React.CSSProperties> = {
   },
   successIcon: { fontSize: 40, color: 'var(--success)', textAlign: 'center' },
   successText: { fontSize: 14, textAlign: 'center', color: 'var(--text)' },
+  promptBanner: {
+    background: 'var(--bg2)', borderLeft: '3px solid var(--accent)',
+    padding: '8px 12px', fontSize: 12, color: 'var(--text)', borderRadius: 4,
+    margin: '4px 0',
+  },
+  benefitList: {
+    listStyle: 'none', margin: '8px 0 4px', padding: 0,
+    display: 'flex', flexDirection: 'column', gap: 4,
+  },
+  benefitItem: {
+    display: 'flex', alignItems: 'center', gap: 8,
+    fontSize: 12, color: 'var(--text)',
+  },
+  benefitCheck: { color: 'var(--accent)', fontWeight: 700, width: 14 },
+  tagline: {
+    fontSize: 11, color: 'var(--text2)', textAlign: 'center', marginTop: 2,
+  },
+  divider: {
+    height: 1, background: 'var(--border)', margin: '16px 0 4px',
+  },
 };

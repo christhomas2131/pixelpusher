@@ -34,6 +34,7 @@ import { detectDuplicates } from './dupe-detector';
 import { checkTakeout } from './takeout-detector';
 import { getLicenseInfo, activateLicense, deactivateLicense, isPro } from './license-manager';
 import { BATCH_SIZE_HASH } from '../shared/constants';
+import { FREE_FILE_CAP, FREE_DUPE_GROUPS_CAP, proRequiredError } from '../shared/pro-features';
 
 let scanRunning = false;
 let cancelScan = false;
@@ -469,7 +470,12 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
     if (!isPro()) {
       const { count } = getOrganizeTotals(options.sessionId);
-      if (count > 100) throw new Error('FREE_TIER_LIMIT: Free tier limited to 100 files per session. Upgrade to Pro to organize unlimited files.');
+      if (count > FREE_FILE_CAP) {
+        throw proRequiredError(
+          'unlimited_organize',
+          `Free tier organizes up to ${FREE_FILE_CAP.toLocaleString()} files per session — this scan has ${count.toLocaleString()}. Upgrade to Pro for unlimited.`
+        );
+      }
     }
 
     organizeRunning = true;
@@ -633,9 +639,11 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   // ── Dupes ─────────────────────────────────────────────────────────────────
 
   ipcMain.handle('dupe:getGroups', async (_event, sessionId: string, page: number, pageSize: number) => {
-    const effectiveSize = isPro() ? pageSize : Math.min(pageSize, 5);
-    const result = await getDupeGroupsPaginated(sessionId, page, effectiveSize);
-    if (!isPro()) result.total = Math.min(result.total, 5);
+    const result = await getDupeGroupsPaginated(sessionId, page, pageSize);
+    if (!isPro()) {
+      result.total = Math.min(result.total, FREE_DUPE_GROUPS_CAP);
+      result.groups = result.groups.slice(0, Math.max(0, FREE_DUPE_GROUPS_CAP - (page - 1) * pageSize));
+    }
     return result;
   });
 

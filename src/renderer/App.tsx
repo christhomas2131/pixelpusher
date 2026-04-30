@@ -13,6 +13,7 @@ import { useScan } from './hooks/useScan';
 import { useFiles } from './hooks/useFiles';
 import { useOrganize } from './hooks/useOrganize';
 import { useHash, HashResult } from './hooks/useHash';
+import { parseProRequiredError, type ProFeature } from '../shared/pro-features';
 import './styles/globals.css';
 
 const PLATFORM = (typeof window !== 'undefined' && window.electronAPI?.platform) || 'unknown';
@@ -53,6 +54,7 @@ function Inner() {
   const [showLicense, setShowLicense] = useState(false);
   const [showTreeView, setShowTreeView] = useState(false);
   const [orgError2, setOrgError2] = useState('');
+  const [licensePrompt, setLicensePrompt] = useState<{ feature: ProFeature; reason: string } | null>(null);
 
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
   const [isDragging, setIsDragging] = useState(false);
@@ -156,9 +158,13 @@ function Inner() {
       await startOrganize(options);
     } catch (err: any) {
       const msg = String(err?.message ?? err);
-      if (msg.includes('FREE_TIER_LIMIT')) {
-        setOrgError2('Free tier limited to 100 files. Upgrade to Pro for unlimited.');
+      const proReq = parseProRequiredError(msg);
+      if (proReq) {
+        setOrgError2(proReq.reason);
+        setLicensePrompt(proReq);
         setShowLicense(true);
+      } else {
+        setOrgError2(msg);
       }
     }
   };
@@ -343,8 +349,9 @@ function Inner() {
       {showLicense && (
         <LicenseModal
           license={license}
-          onClose={() => setShowLicense(false)}
-          onActivated={() => { refreshLicense(); setShowLicense(false); }}
+          prompt={licensePrompt}
+          onClose={() => { setShowLicense(false); setLicensePrompt(null); }}
+          onActivated={() => { refreshLicense(); setShowLicense(false); setLicensePrompt(null); }}
         />
       )}
     </div>

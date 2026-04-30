@@ -4,6 +4,7 @@ import os from 'os';
 import crypto from 'crypto';
 import { app } from 'electron';
 import { logger } from './logger';
+import type { Tier } from '../shared/pro-features';
 
 const LICENSE_PATH = path.join(os.homedir(), '.photomove', 'license.json');
 
@@ -20,6 +21,7 @@ export type LicenseStatus = 'valid' | 'invalid' | 'missing';
 
 export interface LicenseInfo {
   status: LicenseStatus;
+  tier: Tier;
   key?: string;
   email?: string;
   activatedAt?: string;
@@ -67,16 +69,16 @@ export function generateKey(): string {
 
 export function getLicenseInfo(): LicenseInfo {
   try {
-    if (!fs.existsSync(LICENSE_PATH)) return { status: 'missing' };
+    if (!fs.existsSync(LICENSE_PATH)) return { status: 'missing', tier: 'free' };
     const raw  = fs.readFileSync(LICENSE_PATH, 'utf8');
     const data = JSON.parse(raw) as { key: string; email: string; activatedAt: string };
     if (isDevKey(data.key)) {
-      return { status: 'valid', key: data.key, email: 'dev', activatedAt: data.activatedAt, developer: true };
+      return { status: 'valid', tier: 'pro', key: data.key, email: 'dev', activatedAt: data.activatedAt, developer: true };
     }
-    if (!validateKey(data.key)) return { status: 'invalid', key: data.key };
-    return { status: 'valid', key: data.key, email: data.email, activatedAt: data.activatedAt };
+    if (!validateKey(data.key)) return { status: 'invalid', tier: 'free', key: data.key };
+    return { status: 'valid', tier: 'pro', key: data.key, email: data.email, activatedAt: data.activatedAt };
   } catch {
-    return { status: 'missing' };
+    return { status: 'missing', tier: 'free' };
   }
 }
 
@@ -84,8 +86,12 @@ export function getLicenseStatus(): LicenseStatus {
   return getLicenseInfo().status;
 }
 
+export function getTier(): Tier {
+  return getLicenseInfo().tier;
+}
+
 export function isPro(): boolean {
-  return getLicenseStatus() === 'valid';
+  return getTier() === 'pro';
 }
 
 export function activateLicense(key: string, email: string): boolean {
