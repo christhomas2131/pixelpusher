@@ -7,7 +7,9 @@ export interface Migration {
 }
 
 // Migrations run in order. Each migration's `id` becomes the new user_version.
-// Never edit a migration after it ships — append a new one instead.
+// Never edit a migration after it ships — append a new one to the end instead.
+// (planMigrations sorts by id, but keeping the array in chronological order
+// keeps diffs sane when adding new entries.)
 export const MIGRATIONS: Migration[] = [
   {
     id: 1,
@@ -92,6 +94,13 @@ export const MIGRATIONS: Migration[] = [
         status TEXT DEFAULT 'running',
         updated_at TEXT DEFAULT (datetime('now'))
       );
+    `,
+  },
+  {
+    id: 2,
+    name: 'add_mode_to_scan_sessions',
+    up: `
+      ALTER TABLE scan_sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'photos';
     `,
   },
 ];

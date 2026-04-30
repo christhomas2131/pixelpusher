@@ -1,4 +1,5 @@
 import type { Tier } from './pro-features';
+import type { Mode } from './mode';
 
 export type FileStatus = 'pending' | 'ready' | 'junk' | 'error' | 'organized' | 'skipped';
 export type LicenseStatus = 'valid' | 'invalid' | 'missing';
@@ -62,6 +63,7 @@ export interface ScanSession {
   scan_depth: ScanDepth;
   scan_speed: ScanSpeed;
   status: SessionStatus;
+  mode: Mode;
 }
 
 export interface FileCounts {
@@ -80,6 +82,7 @@ export interface ScanOptions {
   scanDepth: ScanDepth;
   scanSpeed: ScanSpeed;
   enabledCategories?: FileCategory[];
+  mode: Mode;
 }
 
 export interface ScanProgress {
@@ -198,6 +201,7 @@ export interface AppSettings {
   recentFolders: string[];
   windowBounds: { x: number; y: number; width: number; height: number } | null;
   leftPanelWidth: number;
+  mode: Mode;
 }
 
 export interface GetFilesPageRequest {

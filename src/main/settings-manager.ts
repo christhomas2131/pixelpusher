@@ -18,6 +18,7 @@ const DEFAULTS: AppSettings = {
   recentFolders: [],
   windowBounds: null,
   leftPanelWidth: 280,
+  mode: 'photos',
 };
 
 export function getSettings(): AppSettings {

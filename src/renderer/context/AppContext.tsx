@@ -24,6 +24,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   recentFolders: [],
   windowBounds: null,
   leftPanelWidth: 280,
+  mode: 'photos',
 };
 
 const AppContext = createContext<AppState>({

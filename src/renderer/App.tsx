@@ -9,12 +9,14 @@ import { DupeReview } from './components/DupeReview';
 import { LicenseModal } from './components/LicenseModal';
 import { FolderTreeView } from './components/FolderTreeView';
 import { DryRunPreview } from './components/DryRunPreview';
+import { ModeSwitcher } from './components/ModeSwitcher';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { useScan } from './hooks/useScan';
 import { useFiles } from './hooks/useFiles';
 import { useOrganize } from './hooks/useOrganize';
 import { useHash, HashResult } from './hooks/useHash';
 import { parseProRequiredError, FREE_FILE_CAP, type ProFeature } from '../shared/pro-features';
+import { defaultPatternForMode, type Mode } from '../shared/mode';
 import type { OrganizeOptions, DryRunResult } from '../shared/types';
 import './styles/globals.css';
 
@@ -43,7 +45,8 @@ const MAX_PANEL_WIDTH = 500;
 const DEFAULT_PANEL_WIDTH = 280;
 
 function Inner() {
-  const { sessionId, setSessionId, isPro, license, refreshLicense, settings } = useAppContext();
+  const { sessionId, setSessionId, isPro, license, refreshLicense, settings, refreshSettings } = useAppContext();
+  const mode: Mode = settings?.mode ?? 'photos';
   const { state, progress, error, sessionId: scanSessionId, startScan, cancelScan } = useScan();
   const { files, counts, page, totalPages, totalCount, sortBy, sortDir, filters, loading,
     setPage, setSortBy, setFilters, refresh } = useFiles(sessionId);
@@ -135,7 +138,31 @@ function Inner() {
     setShowDupeReview(false);
     setShowTreeView(false);
     setOrgError2('');
+    setDryRunOptions(null);
+    setDryRunResult(null);
     setSessionId(null);
+  };
+
+  const handleModeChange = async (next: Mode) => {
+    if (!settings) return;
+    if (next === mode) return;
+    // Save mode + reset folderPattern to mode default so the next scan
+    // starts with sensible defaults; user can still customize after.
+    await window.electronAPI.saveSettings({
+      ...settings,
+      mode: next,
+      folderPattern: defaultPatternForMode(next),
+    });
+    refreshSettings();
+    handleNewScan();
+  };
+
+  const handleModeUpgradeRequired = (target: Mode) => {
+    setLicensePrompt({
+      feature: 'datahoarder_mode',
+      reason: `${target === 'datahoarder' ? 'DataHoarder mode' : 'This mode'} is a Pro feature — organize PDFs, docs, audio, design files, and more.`,
+    });
+    setShowLicense(true);
   };
 
   // Use a ref so the IPC listener always calls the latest version of handleNewScan
@@ -247,6 +274,12 @@ function Inner() {
           {isDev && <span style={styles.devBadge}>DEV</span>}
           PixelPusher
         </div>
+        <ModeSwitcher
+          mode={mode}
+          isPro={isPro}
+          onChange={handleModeChange}
+          onUpgradeRequired={handleModeUpgradeRequired}
+        />
         {error && <div style={styles.errorBanner}>{error}</div>}
         {orgError2 && <div style={{ ...styles.errorBanner, background: 'var(--warn)' }}>{orgError2}</div>}
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
@@ -285,6 +318,7 @@ function Inner() {
       <div style={styles.body}>
         <div style={{ ...styles.sidebar, width: panelWidth }}>
           <ScanPanel
+            mode={mode}
             onScan={startScan}
             onCancel={cancelScan}
             scanning={state === 'scanning'}
@@ -333,6 +367,7 @@ function Inner() {
           {showDestination && (
             <DestinationPanel
               sessionId={sessionId!}
+              mode={mode}
               counts={counts}
               onPreview={handlePreview}
             />

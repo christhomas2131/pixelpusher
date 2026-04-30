@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { FileCounts, OrganizeOptions, OperationMode, ConflictStrategy } from '../../shared/types';
 import { resolvePattern, getPatternTokens, PatternContext } from '../../shared/pattern';
+import { defaultPatternForMode, type Mode } from '../../shared/mode';
 
 interface Props {
   sessionId: string;
+  mode: Mode;
   counts: FileCounts | null;
   onPreview: (options: OrganizeOptions) => void;
 }
@@ -26,9 +28,9 @@ const PREVIEW_CTX: PatternContext = {
   format: 'jpg',
 };
 
-export function DestinationPanel({ sessionId, counts, onPreview }: Props) {
+export function DestinationPanel({ sessionId, mode: appMode, counts, onPreview }: Props) {
   const [destination,      setDestination]      = useState('');
-  const [pattern,          setPattern]          = useState('{YYYY}/{MMM}');
+  const [pattern,          setPattern]          = useState(() => defaultPatternForMode(appMode));
   const [orgMode,          setOrgMode]          = useState<OrgMode>('date');
   const [mode,             setMode]             = useState<OperationMode>('copy');
   const [conflictStrategy, setConflictStrategy] = useState<ConflictStrategy>('rename');
@@ -37,11 +39,14 @@ export function DestinationPanel({ sessionId, counts, onPreview }: Props) {
     window.electronAPI.getPictures().then(p => setDestination(d => d || p));
     window.electronAPI.getSettings().then(s => {
       if (s.lastDestination) setDestination(s.lastDestination);
-      if (s.folderPattern)   setPattern(s.folderPattern);
+      // Pattern: stored value if set, otherwise the mode's default. This lets
+      // a user customize a pattern in DataHoarder mode without it leaking
+      // back to PixelPusher mode (and vice versa) when switching.
+      setPattern(s.folderPattern || defaultPatternForMode(appMode));
       setMode(s.operationMode);
       setConflictStrategy(s.conflictStrategy);
     });
-  }, []);
+  }, [appMode]);
 
   const browse = async () => {
     const p = await window.electronAPI.openFolderDialog();
@@ -75,6 +80,7 @@ export function DestinationPanel({ sessionId, counts, onPreview }: Props) {
       recentFolders: [],
       windowBounds: null,
       leftPanelWidth: 280,
+      mode: appMode,
     });
   };
 

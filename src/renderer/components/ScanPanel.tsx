@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ScanOptions, ScanDepth, ScanSpeed, ScanProgress } from '../../shared/types';
+import { type Mode } from '../../shared/mode';
 import { CollapsibleSection } from './CollapsibleSection';
 import { SOURCE_BADGE_COLORS } from '../../shared/constants';
 
@@ -17,6 +18,7 @@ function detectOverlap(folders: string[]): string | null {
 }
 
 interface Props {
+  mode: Mode;
   onScan: (options: ScanOptions) => void;
   onCancel: () => void;
   scanning: boolean;
@@ -25,7 +27,7 @@ interface Props {
   totalFiles?: number;
 }
 
-export function ScanPanel({ onScan, onCancel, scanning, done, progress, totalFiles }: Props) {
+export function ScanPanel({ mode, onScan, onCancel, scanning, done, progress, totalFiles }: Props) {
   const [folders, setFolders] = useState<string[]>([]);
   const [depth, setDepth] = useState<ScanDepth>('quick');
   const [speed, setSpeed] = useState<ScanSpeed>('safe');
@@ -51,7 +53,7 @@ export function ScanPanel({ onScan, onCancel, scanning, done, progress, totalFil
 
   const handleScan = () => {
     if (folders.length === 0) return;
-    onScan({ sourceFolders: folders, scanDepth: depth, scanSpeed: speed });
+    onScan({ sourceFolders: folders, scanDepth: depth, scanSpeed: speed, mode });
   };
 
   const sourceSummary = folders.length === 0

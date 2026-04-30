@@ -36,6 +36,7 @@ import { checkTakeout } from './takeout-detector';
 import { getLicenseInfo, activateLicense, deactivateLicense, isPro } from './license-manager';
 import { BATCH_SIZE_HASH } from '../shared/constants';
 import { FREE_FILE_CAP, FREE_DUPE_GROUPS_CAP, proRequiredError } from '../shared/pro-features';
+import { defaultCategoriesForMode } from '../shared/mode';
 
 let scanRunning = false;
 let cancelScan = false;
@@ -376,9 +377,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       sourceFolders: options.sourceFolders,
       scanDepth: options.scanDepth,
       scanSpeed: options.scanSpeed,
+      mode: options.mode,
     });
 
-    logger.info('scan', `Session ${sessionId} — ${options.sourceFolders.length} folder(s), depth=${options.scanDepth}, speed=${options.scanSpeed}`);
+    logger.info('scan', `Session ${sessionId} — ${options.sourceFolders.length} folder(s), depth=${options.scanDepth}, speed=${options.scanSpeed}, mode=${options.mode}`);
 
     // Safety net: cancel scan after 30 minutes
     const scanTimeout = setTimeout(() => {
@@ -403,7 +405,9 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           setDockProgress(win, 0, 0); // indeterminate while discovering
         }
 
-        const enabledCategories = (options.enabledCategories ?? getSettings().enabledFileCategories) as FileCategory[];
+        const enabledCategories = (
+          options.enabledCategories ?? defaultCategoriesForMode(options.mode)
+        ) as FileCategory[];
         const { totalFiles, totalSize } = await scanDirectory(options.sourceFolders, sessionId, 0, win, enabledCategories);
         logger.info('scan', `Discovery complete: ${totalFiles} files`);
 

@@ -76,12 +76,13 @@ export function insertScanSession(session: {
   sourceFolders: string[];
   scanDepth: string;
   scanSpeed: string;
+  mode: string;
 }): void {
   const db = getDb();
   db.prepare(`
-    INSERT INTO scan_sessions (id, source_folders, started_at, scan_depth, scan_speed, status)
-    VALUES (?, ?, datetime('now'), ?, ?, 'running')
-  `).run(session.id, JSON.stringify(session.sourceFolders), session.scanDepth, session.scanSpeed);
+    INSERT INTO scan_sessions (id, source_folders, started_at, scan_depth, scan_speed, status, mode)
+    VALUES (?, ?, datetime('now'), ?, ?, 'running', ?)
+  `).run(session.id, JSON.stringify(session.sourceFolders), session.scanDepth, session.scanSpeed, session.mode);
 }
 
 export function completeScanSession(id: string, totalFiles: number, totalSize: number): void {
