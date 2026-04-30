@@ -103,6 +103,15 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE scan_sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'photos';
     `,
   },
+  {
+    id: 3,
+    name: 'add_byte_hash_to_files',
+    up: `
+      ALTER TABLE files ADD COLUMN byte_hash TEXT;
+      CREATE INDEX IF NOT EXISTS idx_files_byte_hash
+        ON files(scan_session_id, byte_hash) WHERE byte_hash IS NOT NULL;
+    `,
+  },
 ];
 
 export interface MigrationLogger {

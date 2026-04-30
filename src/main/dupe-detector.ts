@@ -136,3 +136,85 @@ export async function detectDuplicates(
 
   return groupCount as number;
 }
+
+// Byte-exact dupe detection for DataHoarder mode. SHA-256 collisions are
+// effectively impossible for real-world content, so we group by exact hash
+// match — no thresholds, no union-find, no pairwise comparison. The work is
+// "GROUP BY byte_hash HAVING COUNT(*) > 1".
+//
+// Keeper choice: prefer the file with the shortest source_path (less buried
+// in nested folders), then alphabetical filename as tiebreaker. The user can
+// always override in the dupe-review UI.
+export interface ByteHashRow {
+  id: string;
+  source_path: string;
+  filename: string;
+  size: number;
+  byte_hash?: string;
+}
+
+// Pure helper: takes already-fetched rows (with byte_hash), returns the
+// groups that have ≥2 members, with each group sorted in keeper-first order.
+// Exported for unit testing — `detectByteHashDuplicates` wraps it with the
+// DB read+write side-effects.
+export function groupByByteHash(rows: ByteHashRow[]): ByteHashRow[][] {
+  const byHash = new Map<string, ByteHashRow[]>();
+  for (const row of rows) {
+    if (!row.byte_hash) continue;
+    const list = byHash.get(row.byte_hash);
+    if (list) list.push(row);
+    else byHash.set(row.byte_hash, [row]);
+  }
+  const groups: ByteHashRow[][] = [];
+  for (const list of byHash.values()) {
+    if (list.length < 2) continue;
+    list.sort((a, b) => {
+      const da = a.source_path.split(/[/\\]/).length;
+      const db = b.source_path.split(/[/\\]/).length;
+      if (da !== db) return da - db;
+      return a.filename.localeCompare(b.filename);
+    });
+    groups.push(list);
+  }
+  return groups;
+}
+
+export async function detectByteHashDuplicates(sessionId: string): Promise<number> {
+  const db = getDb();
+
+  const rows = db.prepare(
+    `SELECT id, source_path, filename, size, byte_hash FROM files
+     WHERE scan_session_id = ? AND byte_hash IS NOT NULL AND status = 'ready'`
+  ).all(sessionId) as ByteHashRow[];
+
+  const groups = groupByByteHash(rows);
+  if (groups.length === 0) return 0;
+
+  // Clear any stale groups for this session before inserting new ones.
+  db.prepare(
+    'DELETE FROM dupe_group_members WHERE group_id IN (SELECT id FROM dupe_groups WHERE scan_session_id = ?)'
+  ).run(sessionId);
+  db.prepare('DELETE FROM dupe_groups WHERE scan_session_id = ?').run(sessionId);
+
+  const insertGroup = db.prepare(
+    "INSERT INTO dupe_groups (id, scan_session_id, member_count, status) VALUES (?, ?, ?, 'pending')"
+  );
+  const insertMember = db.prepare(
+    'INSERT INTO dupe_group_members (group_id, file_id, is_keeper, rank) VALUES (?, ?, ?, ?)'
+  );
+
+  const groupCount = db.transaction(() => {
+    let count = 0;
+    for (const members of groups) {
+      const groupId = crypto.randomUUID();
+      insertGroup.run(groupId, sessionId, members.length);
+      members.forEach((m, idx) => {
+        insertMember.run(groupId, m.id, idx === 0 ? 1 : 0, idx);
+      });
+      count++;
+    }
+    return count;
+  })();
+
+  return groupCount as number;
+}

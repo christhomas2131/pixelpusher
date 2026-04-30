@@ -186,6 +186,43 @@ export function updateFileHashBatch(updates: { id: string; phash: string | null 
   run(updates);
 }
 
+// ── Byte-hash variants (DataHoarder) ─────────────────────────────────────────
+// Mirror of the phash flow above for non-photo categories. Keeps the queries
+// surface-level identical so ipc-handlers.ts can dispatch on mode without
+// branching on schema specifics.
+
+export function getByteHashableFiles(sessionId: string, lastId: string, limit: number): FileRecord[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT * FROM files
+    WHERE scan_session_id = ? AND byte_hash IS NULL AND status = 'ready'
+      AND file_category IN ('documents','audio','design','3d') AND id > ?
+    ORDER BY id LIMIT ?
+  `).all(sessionId, lastId, limit) as FileRecord[];
+}
+
+export function getByteHashableCount(sessionId: string): number {
+  const db = getDb();
+  return (db.prepare(
+    "SELECT COUNT(*) as n FROM files WHERE scan_session_id = ? AND byte_hash IS NULL AND status = 'ready' AND file_category IN ('documents','audio','design','3d')"
+  ).get(sessionId) as { n: number }).n;
+}
+
+export function updateFileByteHashBatch(updates: { id: string; byte_hash: string | null }[]): void {
+  const db = getDb();
+  const stmt = db.prepare('UPDATE files SET byte_hash = @byte_hash WHERE id = @id');
+  const run = db.transaction((rows: { id: string; byte_hash: string | null }[]) => {
+    for (const row of rows) stmt.run(row);
+  });
+  run(updates);
+}
+
+export function getScanSessionMode(sessionId: string): string {
+  const db = getDb();
+  const row = db.prepare('SELECT mode FROM scan_sessions WHERE id = ?').get(sessionId) as { mode: string } | undefined;
+  return row?.mode ?? 'photos';
+}
+
 export function getDupeGroupCount(sessionId: string): number {
   const db = getDb();
   return (db.prepare(

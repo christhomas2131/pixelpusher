@@ -10,6 +10,8 @@ import {
   updateFilesExifBatch, ExifUpdateRow,
   getFilesForOrganize, getOrganizeTotals, getDb,
   getHashableFiles, getHashableCount, updateFileHashBatch,
+  getByteHashableFiles, getByteHashableCount, updateFileByteHashBatch,
+  getScanSessionMode,
   getDupeGroupsPaginated, resolveDupeGroup, getDupeGroupCount,
 } from './database';
 import { scanDirectory, requestScanCancel } from './file-scanner';
@@ -31,7 +33,8 @@ import {
 import { safeCopy, safeMove, resolveConflict, buildFullDestination, humanizeFileError } from './file-mover';
 import { dryRunOrganize } from './dry-run';
 import { computePHash } from './hash-engine';
-import { detectDuplicates } from './dupe-detector';
+import { computeByteHash } from './byte-hash-engine';
+import { detectDuplicates, detectByteHashDuplicates } from './dupe-detector';
 import { checkTakeout } from './takeout-detector';
 import { getLicenseInfo, activateLicense, deactivateLicense, isPro } from './license-manager';
 import { BATCH_SIZE_HASH } from '../shared/constants';
@@ -581,11 +584,20 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     const win = getWindow();
     if (!win) { hashRunning = false; throw new Error('No window'); }
 
-    logger.info('hash', `Starting pHash for session ${sessionId}`);
+    // Mode-aware dispatch:
+    //   photos       → perceptual hash (sharp DCT) + hamming-distance clustering
+    //   datahoarder  → SHA-256 byte hash + exact-match grouping
+    // Same IPC surface, same UI, different algorithms underneath.
+    const sessionMode = getScanSessionMode(sessionId);
+    const isByteHashMode = sessionMode === 'datahoarder';
+
+    logger.info('hash', `Starting ${isByteHashMode ? 'byte-hash (SHA-256)' : 'pHash'} for session ${sessionId}`);
 
     setImmediate(async () => {
       try {
-        const total = getHashableCount(sessionId);
+        const total = isByteHashMode
+          ? getByteHashableCount(sessionId)
+          : getHashableCount(sessionId);
         const rate  = new RateCalculator();
         let processed = 0;
         let lastId    = '';
@@ -593,19 +605,29 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         while (true) {
           if (cancelHashFlag) break;
 
-          const batch = getHashableFiles(sessionId, lastId, BATCH_SIZE_HASH);
+          const batch = isByteHashMode
+            ? getByteHashableFiles(sessionId, lastId, BATCH_SIZE_HASH)
+            : getHashableFiles(sessionId, lastId, BATCH_SIZE_HASH);
           if (batch.length === 0) break;
 
-          const results = await Promise.allSettled(
-            batch.map(f => computePHash(f.source_path))
-          );
+          if (isByteHashMode) {
+            const results = await Promise.allSettled(
+              batch.map(f => computeByteHash(f.source_path))
+            );
+            updateFileByteHashBatch(results.map((r, i) => ({
+              id: batch[i].id,
+              byte_hash: r.status === 'fulfilled' ? r.value : null,
+            })));
+          } else {
+            const results = await Promise.allSettled(
+              batch.map(f => computePHash(f.source_path))
+            );
+            updateFileHashBatch(results.map((r, i) => ({
+              id: batch[i].id,
+              phash: r.status === 'fulfilled' ? r.value : null,
+            })));
+          }
 
-          const updates = results.map((r, i) => ({
-            id:    batch[i].id,
-            phash: r.status === 'fulfilled' ? r.value : null,
-          }));
-
-          updateFileHashBatch(updates);
           processed += batch.length;
           lastId     = batch[batch.length - 1].id;
           rate.update(processed);
@@ -630,9 +652,14 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           }
         }
 
-        // Auto-run dupe detection after hashing
-        const dupeGroups = cancelHashFlag ? 0 : await detectDuplicates(sessionId);
-        logger.info('hash', `Hashing complete: ${processed} hashed, ${dupeGroups} dupe groups`);
+        // Auto-run dupe detection after hashing — same routine for both modes,
+        // different scorer inside.
+        const dupeGroups = cancelHashFlag
+          ? 0
+          : isByteHashMode
+            ? await detectByteHashDuplicates(sessionId)
+            : await detectDuplicates(sessionId);
+        logger.info('hash', `Hashing complete: ${processed} hashed, ${dupeGroups} dupe groups (mode=${sessionMode})`);
 
         if (!win.isDestroyed()) {
           win.webContents.send('hash:complete', { sessionId, hashed: processed, dupeGroups });
