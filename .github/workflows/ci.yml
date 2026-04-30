@@ -22,7 +22,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # @electron/rebuild 4.x requires Node >= 22.12; electron-builder 26 inherits.
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
