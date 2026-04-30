@@ -1,6 +1,5 @@
-import { Menu, MenuItem, BrowserWindow, dialog, shell, app } from 'electron';
+import { Menu, BrowserWindow, dialog, shell, app } from 'electron';
 import fs from 'fs';
-import path from 'path';
 import { getSettings, saveSettings } from './settings-manager';
 import { LOG_DIR, LOG_FILE } from './logger';
 import { getDb } from './database';
@@ -8,7 +7,40 @@ import { logger } from './logger';
 import { Theme } from '../shared/types';
 
 export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
+  const isMac = process.platform === 'darwin';
+  const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
+
+  const aboutItem: Electron.MenuItemConstructorOptions = {
+    label: `About ${app.name}`,
+    click: () => {
+      const win = getWindow();
+      if (!win) return;
+      dialog.showMessageBox(win, {
+        type: 'info',
+        title: `About ${app.name}`,
+        message: app.name,
+        detail: `Version: ${app.getVersion()}\nElectron: ${process.versions.electron}\nNode: ${process.versions.node}`,
+      });
+    },
+  };
+
   const template: Electron.MenuItemConstructorOptions[] = [
+    ...(isMac
+      ? [{
+          label: app.name,
+          submenu: [
+            aboutItem,
+            { type: 'separator' as const },
+            { role: 'services' as const, submenu: [] },
+            { type: 'separator' as const },
+            { role: 'hide' as const },
+            { role: 'hideOthers' as const },
+            { role: 'unhide' as const },
+            { type: 'separator' as const },
+            { role: 'quit' as const },
+          ],
+        }]
+      : []),
     {
       label: 'File',
       submenu: [
@@ -30,7 +62,37 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
         { type: 'separator' },
         buildRecentFoldersMenu(getWindow),
         { type: 'separator' },
-        { role: 'quit', label: 'Exit' },
+        isMac ? { role: 'close' } : { role: 'quit' },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        ...(isMac
+          ? [
+              { role: 'pasteAndMatchStyle' as const },
+              { role: 'delete' as const },
+              { role: 'selectAll' as const },
+              { type: 'separator' as const },
+              {
+                label: 'Speech',
+                submenu: [
+                  { role: 'startSpeaking' as const },
+                  { role: 'stopSpeaking' as const },
+                ],
+              },
+            ]
+          : [
+              { role: 'delete' as const },
+              { type: 'separator' as const },
+              { role: 'selectAll' as const },
+            ]),
       ],
     },
     {
@@ -50,7 +112,13 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
         buildThemeMenu(getWindow),
         { type: 'separator' },
         { role: 'reload' },
-        { role: 'toggleDevTools' },
+        ...(isDev ? [{ role: 'forceReload' as const }, { role: 'toggleDevTools' as const }] : []),
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
       ],
     },
     {
@@ -119,22 +187,24 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
       ],
     },
     {
+      label: 'Window',
+      submenu: [
+        { role: 'minimize' },
+        { role: 'zoom' },
+        ...(isMac
+          ? [
+              { type: 'separator' as const },
+              { role: 'front' as const },
+              { type: 'separator' as const },
+              { role: 'window' as const },
+            ]
+          : [{ role: 'close' as const }]),
+      ],
+    },
+    {
       label: 'Help',
       submenu: [
-        {
-          label: 'About PixelPusher',
-          click: () => {
-            const win = getWindow();
-            if (!win) return;
-            dialog.showMessageBox(win, {
-              type: 'info',
-              title: 'About PixelPusher',
-              message: 'PixelPusher',
-              detail: `Version: ${app.getVersion()}\nElectron: ${process.versions.electron}\nNode: ${process.versions.node}`,
-            });
-          },
-        },
-        { type: 'separator' },
+        ...(isMac ? [] : [aboutItem, { type: 'separator' as const }]),
         {
           label: 'View Logs',
           accelerator: 'CmdOrCtrl+Shift+L',
