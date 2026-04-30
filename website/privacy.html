@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy Policy — PixelPusher</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0d0d1a; --surface: #1a1a32; --border: #2a2a4a;
+  --text: #e2e2f0; --text2: #9898b8; --accent: #4f8ef7;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+body { font-family: var(--font); background: var(--bg); color: var(--text); font-size: 16px; line-height: 1.7; }
+a { color: var(--accent); }
+nav { background: #141428; border-bottom: 1px solid var(--border); padding: 0 24px; }
+.nav-inner { max-width: 800px; margin: 0 auto; display: flex; align-items: center; height: 56px; }
+.nav-logo { font-weight: 800; font-size: 18px; color: var(--accent); text-decoration: none; }
+.content { max-width: 800px; margin: 0 auto; padding: 60px 24px 100px; }
+h1 { font-size: 36px; font-weight: 800; margin-bottom: 8px; }
+.date { color: var(--text2); font-size: 14px; margin-bottom: 40px; }
+h2 { font-size: 20px; font-weight: 700; margin: 36px 0 12px; color: var(--text); }
+p { color: var(--text2); margin-bottom: 16px; }
+.highlight {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 24px 28px; margin: 32px 0;
+}
+.highlight p { color: var(--text); font-size: 17px; font-weight: 500; margin: 0; }
+ul { color: var(--text2); padding-left: 24px; margin-bottom: 16px; }
+li { margin-bottom: 8px; }
+footer { border-top: 1px solid var(--border); padding: 24px; text-align: center; color: var(--text2); font-size: 13px; }
+footer a { color: var(--text2); margin: 0 12px; }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-inner">
+    <a href="index.html" class="nav-logo">PixelPusher</a>
+  </div>
+</nav>
+
+<div class="content">
+  <h1>Privacy Policy</h1>
+  <div class="date">Last updated: January 2025</div>
+
+  <div class="highlight">
+    <p>PixelPusher collects no personal data. All processing happens locally on your device. Nothing is ever sent to any server.</p>
+  </div>
+
+  <h2>What PixelPusher Does Not Collect</h2>
+  <p>PixelPusher does not collect, store, transmit, or share any of the following:</p>
+  <ul>
+    <li>Your photos, videos, or any file contents</li>
+    <li>File metadata (dates, camera info, GPS coordinates)</li>
+    <li>Your name, email address, or any contact information</li>
+    <li>Usage analytics or behavioral data</li>
+    <li>Error reports or crash logs (these are stored only on your machine)</li>
+    <li>License key information (stored only in <code>~/.photomove/license.json</code>)</li>
+  </ul>
+
+  <h2>Local Data Storage</h2>
+  <p>PixelPusher stores the following data locally on your machine only:</p>
+  <ul>
+    <li><strong>SQLite database</strong> — file metadata extracted during scans, stored in your app data directory</li>
+    <li><strong>Operation logs</strong> — a record of copy/move operations, stored in <code>~/.photomove/logs/</code></li>
+    <li><strong>Settings</strong> — your preferences (theme, last folder, pattern), stored in your app data directory</li>
+    <li><strong>License file</strong> — your Pro license key and activation email, stored in <code>~/.photomove/license.json</code></li>
+  </ul>
+  <p>You can delete all of this data at any time by removing the <code>~/.photomove/</code> directory.</p>
+
+  <h2>Network Access</h2>
+  <p>PixelPusher does not make any network requests during normal operation. The license validation is performed entirely offline using a cryptographic checksum embedded in the application — no server is contacted.</p>
+  <p>The only exception is if you click an external link within the app (such as "Get Pro"), which opens your default browser.</p>
+
+  <h2>Third-Party Services</h2>
+  <p>PixelPusher uses no third-party analytics, tracking, or telemetry services. No SDKs that phone home are included.</p>
+
+  <h2>Your Files</h2>
+  <p>PixelPusher reads your files to extract metadata and, when you choose to organize, copies or moves them according to your instructions. It does not read the contents of your photos beyond what is needed for metadata extraction and perceptual hashing (for duplicate detection). Your files are never uploaded anywhere.</p>
+
+  <h2>Children's Privacy</h2>
+  <p>PixelPusher does not knowingly collect any information from children under the age of 13, because it collects no information from anyone at all.</p>
+
+  <h2>Changes to This Policy</h2>
+  <p>If this policy ever changes in a meaningful way, the change will be visible in the app's release notes and on this page.</p>
+
+  <h2>Contact</h2>
+  <p>Questions about privacy? Email <a href="mailto:oconnor.j12@northeastern.edu">oconnor.j12@northeastern.edu</a>.</p>
+</div>
+
+<footer>
+  <a href="index.html">Home</a>
+  <a href="mailto:oconnor.j12@northeastern.edu">Contact</a>
+  <div style="margin-top:8px">© 2025 PixelPusher</div>
+</footer>
+
+</body>
+</html>

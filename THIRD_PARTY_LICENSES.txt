@@ -1,0 +1,69 @@
+Third-Party Licenses
+
+PixelPusher uses the following open-source software components. Each is
+subject to its own license. This file lists the components and their
+licenses for transparency and legal compliance.
+
+=============================================================================
+Electron
+=============================================================================
+License: MIT
+https://github.com/electron/electron/blob/main/LICENSE
+
+=============================================================================
+React
+=============================================================================
+License: MIT
+https://github.com/facebook/react/blob/main/LICENSE
+
+=============================================================================
+TypeScript
+=============================================================================
+License: Apache-2.0
+https://github.com/microsoft/TypeScript/blob/main/LICENSE.txt
+
+=============================================================================
+better-sqlite3
+=============================================================================
+License: MIT
+https://github.com/WiseLibs/better-sqlite3/blob/master/LICENSE
+
+=============================================================================
+exiftool-vendored
+=============================================================================
+License: MIT
+https://github.com/photostructure/exiftool-vendored.js/blob/main/LICENSE
+
+ExifTool itself is developed by Phil Harvey and licensed under the Artistic
+License / GPL:
+https://exiftool.org/
+
+=============================================================================
+sharp
+=============================================================================
+License: Apache-2.0
+https://github.com/lovell/sharp/blob/main/LICENSE
+
+=============================================================================
+electron-builder
+=============================================================================
+License: MIT
+https://github.com/electron-userland/electron-builder/blob/master/LICENSE
+
+=============================================================================
+webpack
+=============================================================================
+License: MIT
+https://github.com/webpack/webpack/blob/main/LICENSE
+
+=============================================================================
+concurrently
+=============================================================================
+License: MIT
+https://github.com/open-cli-tools/concurrently/blob/main/LICENSE
+
+=============================================================================
+
+For a complete machine-readable list of all dependencies and their licenses,
+run `npm ls --all` in the PixelPusher source directory, or inspect the
+node_modules folder after installation.
