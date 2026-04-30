@@ -57,7 +57,7 @@ export async function readFileMeta(
 
   let tags: Tags | null = null;
   try {
-    tags = await tool.read(file.source_path, args);
+    tags = await tool.read(file.source_path, { readArgs: args });
   } catch (err: unknown) {
     const msg = String(err);
     // If workers all died, reset singleton so next call gets a fresh instance
