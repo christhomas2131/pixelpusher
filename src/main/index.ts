@@ -9,6 +9,15 @@ import { checkpointDb, closeDb } from './database';
 import { closeExiftool } from './exif-reader';
 import { getLicenseInfo, activateLicense } from './license-manager';
 import { initAutoUpdate } from './auto-update';
+import { initCrashReporter } from './crash-reporter';
+
+// Crash reporter first so it captures errors from everything else, including
+// the heap flag below if it ever throws. No-ops if SENTRY_DSN is unset.
+initCrashReporter();
+
+// In packaged builds CFBundleName provides this; in dev/test runs Electron
+// would otherwise default to "Electron", which leaks into the macOS App menu.
+app.setName('PixelPusher');
 
 // Must be first — raises heap from 1.5GB to 4GB
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096 --expose-gc');
