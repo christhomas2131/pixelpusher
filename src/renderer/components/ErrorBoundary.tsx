@@ -17,7 +17,7 @@ export class ErrorBoundary extends Component<Props, State> {
   render() {
     if (!this.state.hasError) return this.props.children;
     return (
-      <div style={styles.root}>
+      <div style={styles.root} data-testid="error-boundary">
         <div style={styles.box}>
           <div style={styles.icon}>⚠</div>
           <div style={styles.title}>Something went wrong</div>
