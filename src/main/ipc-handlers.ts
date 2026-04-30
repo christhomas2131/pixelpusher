@@ -29,6 +29,7 @@ import {
   OperationLog, getOperationHistory, readLogEntries, getOperationMode,
 } from './operation-log';
 import { safeCopy, safeMove, resolveConflict, buildFullDestination, humanizeFileError } from './file-mover';
+import { dryRunOrganize } from './dry-run';
 import { computePHash } from './hash-engine';
 import { detectDuplicates } from './dupe-detector';
 import { checkTakeout } from './takeout-detector';
@@ -506,6 +507,15 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         clearTimeout(organizeTimeout);
       }
     });
+  });
+
+  ipcMain.handle('organize:dryRun', async (_event, options: OrganizeOptions) => {
+    // Dry-run is read-only and pre-empts any pre-organize gating decisions.
+    // We deliberately do NOT enforce the FREE_FILE_CAP here — users on the
+    // free tier should still be allowed to *see* the proposed tree for their
+    // entire library (that's the conversion moment); the cap applies at the
+    // commit step in `organize:start`.
+    return dryRunOrganize(options);
   });
 
   ipcMain.handle('organize:cancel', async () => {

@@ -56,7 +56,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const l = await window.electronAPI.getLicense();
       setLicense(l);
     } catch {
-      setLicense({ status: 'missing' });
+      setLicense({ status: 'missing', tier: 'free' });
     }
   }, []);
 

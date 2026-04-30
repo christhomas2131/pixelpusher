@@ -1,8 +1,11 @@
+import type { Tier } from './pro-features';
+
 export type FileStatus = 'pending' | 'ready' | 'junk' | 'error' | 'organized' | 'skipped';
 export type LicenseStatus = 'valid' | 'invalid' | 'missing';
 
 export interface LicenseInfo {
   status: LicenseStatus;
+  tier: Tier;
   key?: string;
   email?: string;
   activatedAt?: string;
@@ -96,6 +99,30 @@ export interface OrganizeOptions {
   pattern: string;
   mode: OperationMode;
   conflictStrategy: ConflictStrategy;
+}
+
+export interface DryRunNode {
+  name: string;
+  count: number;
+  bytes: number;
+  internalCollisions: number;  // multiple files mapping to same destination filename
+  children: DryRunNode[];
+}
+
+export interface DryRunSampleEntry {
+  source: string;
+  dest: string;
+}
+
+export interface DryRunResult {
+  totalFiles: number;
+  totalBytes: number;
+  uniqueFolders: number;
+  unknownDate: number;
+  internalCollisions: number;
+  existingConflicts: number;   // proposed dest already exists on disk
+  tree: DryRunNode;            // root node; children are top-level destination subfolders
+  sample: DryRunSampleEntry[]; // first ~20 source→dest mappings for quick visual check
 }
 
 export interface OrganizeProgress {
@@ -220,6 +247,7 @@ export interface ElectronAPI {
   getFileCounts: (sessionId: string) => Promise<FileCounts>;
   // Organize
   startOrganize: (options: OrganizeOptions) => Promise<void>;
+  dryRunOrganize: (options: OrganizeOptions) => Promise<DryRunResult>;
   cancelOrganize: () => Promise<void>;
   undoOrganize: (sessionId: string) => Promise<{ undone: number; errors: number }>;
   getOrganizeHistory: () => Promise<OperationHistoryEntry[]>;

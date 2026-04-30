@@ -12,6 +12,7 @@ const api: ElectronAPI = {
 
   // ── Organize ─────────────────────────────────────────────────────────────────
   startOrganize:      (options)    => ipcRenderer.invoke('organize:start', options),
+  dryRunOrganize:     (options)    => ipcRenderer.invoke('organize:dryRun', options),
   cancelOrganize:     ()           => ipcRenderer.invoke('organize:cancel'),
   undoOrganize:       (sessionId)  => ipcRenderer.invoke('organize:undo', sessionId),
   getOrganizeHistory: ()           => ipcRenderer.invoke('organize:getHistory'),

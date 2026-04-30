@@ -8,12 +8,14 @@ import { OrganizeProgressView } from './components/OrganizeProgress';
 import { DupeReview } from './components/DupeReview';
 import { LicenseModal } from './components/LicenseModal';
 import { FolderTreeView } from './components/FolderTreeView';
+import { DryRunPreview } from './components/DryRunPreview';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { useScan } from './hooks/useScan';
 import { useFiles } from './hooks/useFiles';
 import { useOrganize } from './hooks/useOrganize';
 import { useHash, HashResult } from './hooks/useHash';
-import { parseProRequiredError, type ProFeature } from '../shared/pro-features';
+import { parseProRequiredError, FREE_FILE_CAP, type ProFeature } from '../shared/pro-features';
+import type { OrganizeOptions, DryRunResult } from '../shared/types';
 import './styles/globals.css';
 
 const PLATFORM = (typeof window !== 'undefined' && window.electronAPI?.platform) || 'unknown';
@@ -55,6 +57,9 @@ function Inner() {
   const [showTreeView, setShowTreeView] = useState(false);
   const [orgError2, setOrgError2] = useState('');
   const [licensePrompt, setLicensePrompt] = useState<{ feature: ProFeature; reason: string } | null>(null);
+  const [dryRunOptions, setDryRunOptions] = useState<OrganizeOptions | null>(null);
+  const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null);
+  const [dryRunLoading, setDryRunLoading] = useState(false);
 
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
   const [isDragging, setIsDragging] = useState(false);
@@ -152,7 +157,28 @@ function Inner() {
     refresh();
   };
 
-  const handleOrganize = async (options: Parameters<typeof startOrganize>[0]) => {
+  const handlePreview = async (options: OrganizeOptions) => {
+    setOrgError2('');
+    setDryRunOptions(options);
+    setDryRunResult(null);
+    setDryRunLoading(true);
+    try {
+      const result = await window.electronAPI.dryRunOrganize(options);
+      setDryRunResult(result);
+    } catch (err: any) {
+      const msg = String(err?.message ?? err);
+      setOrgError2(`Preview failed: ${msg}`);
+      setDryRunOptions(null);
+    } finally {
+      setDryRunLoading(false);
+    }
+  };
+
+  const handleConfirmOrganize = async () => {
+    if (!dryRunOptions) return;
+    const options = dryRunOptions;
+    setDryRunOptions(null);
+    setDryRunResult(null);
     setOrgError2('');
     try {
       await startOrganize(options);
@@ -169,15 +195,41 @@ function Inner() {
     }
   };
 
+  const handleBackFromPreview = () => {
+    setDryRunOptions(null);
+    setDryRunResult(null);
+    setOrgError2('');
+  };
+
+  // Free-tier dry-run can show the full proposed tree, but the Confirm step
+  // is gated when the count exceeds the cap. The renderer surfaces the gate
+  // up-front (before the user clicks Confirm) so the upgrade moment isn't a
+  // surprise modal after a long preview.
+  const dryRunBlock = (() => {
+    if (!dryRunResult || isPro) return undefined;
+    if (dryRunResult.totalFiles <= FREE_FILE_CAP) return undefined;
+    return {
+      reason: `Free tier organizes up to ${FREE_FILE_CAP.toLocaleString()} files at a time. This preview includes ${dryRunResult.totalFiles.toLocaleString()}.`,
+      onUpgrade: () => {
+        setLicensePrompt({
+          feature: 'unlimited_organize',
+          reason: `Upgrade to organize all ${dryRunResult.totalFiles.toLocaleString()} files in one pass.`,
+        });
+        setShowLicense(true);
+      },
+    };
+  })();
+
   const handleExportReport = async () => {
     if (!sessionId) return;
     try { await window.electronAPI.exportReport(sessionId); } catch { /* dismissed */ }
   };
 
+  const showDryRun = !!dryRunOptions;
   const showOrganize    = orgState !== 'idle';
-  const showDestination = sessionId && state === 'done' && !showOrganize && !showDupeReview;
+  const showDestination = sessionId && state === 'done' && !showOrganize && !showDupeReview && !showDryRun;
   const showHashProgress = hashState === 'hashing';
-  const showDupeSection = state === 'done' && !!sessionId && !showOrganize && hashState !== 'hashing';
+  const showDupeSection = state === 'done' && !!sessionId && !showOrganize && hashState !== 'hashing' && !showDryRun;
   const dupeGroupCount = hashResult?.dupeGroups ?? counts?.dupes ?? 0;
   const organizeComplete = orgState === 'complete';
   const isDev = license?.developer === true;
@@ -282,7 +334,7 @@ function Inner() {
             <DestinationPanel
               sessionId={sessionId!}
               counts={counts}
-              onOrganize={handleOrganize}
+              onPreview={handlePreview}
             />
           )}
         </div>
@@ -294,7 +346,22 @@ function Inner() {
         />
 
         <div style={styles.main}>
-          {showDupeReview && sessionId ? (
+          {showDryRun ? (
+            dryRunLoading || !dryRunResult ? (
+              <div style={styles.welcome}>
+                <div style={styles.welcomeTitle}>Computing preview…</div>
+                <div style={styles.welcomeSub}>Walking the destination tree without touching a single file.</div>
+              </div>
+            ) : (
+              <DryRunPreview
+                options={dryRunOptions!}
+                result={dryRunResult}
+                blockedByTier={dryRunBlock}
+                onConfirm={handleConfirmOrganize}
+                onBack={handleBackFromPreview}
+              />
+            )
+          ) : showDupeReview && sessionId ? (
             <DupeReview
               sessionId={sessionId}
               totalGroups={dupeGroupCount}

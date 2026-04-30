@@ -5,7 +5,7 @@ import { resolvePattern, getPatternTokens, PatternContext } from '../../shared/p
 interface Props {
   sessionId: string;
   counts: FileCounts | null;
-  onOrganize: (options: OrganizeOptions) => void;
+  onPreview: (options: OrganizeOptions) => void;
 }
 
 type OrgMode = 'date' | 'type';
@@ -26,7 +26,7 @@ const PREVIEW_CTX: PatternContext = {
   format: 'jpg',
 };
 
-export function DestinationPanel({ sessionId, counts, onOrganize }: Props) {
+export function DestinationPanel({ sessionId, counts, onPreview }: Props) {
   const [destination,      setDestination]      = useState('');
   const [pattern,          setPattern]          = useState('{YYYY}/{MMM}');
   const [orgMode,          setOrgMode]          = useState<OrgMode>('date');
@@ -59,9 +59,9 @@ export function DestinationPanel({ sessionId, counts, onOrganize }: Props) {
 
   const readyCount = counts?.ready ?? 0;
 
-  const handleOrganize = () => {
+  const handlePreview = () => {
     if (!destination) return;
-    onOrganize({ sessionId, destination, pattern, mode, conflictStrategy });
+    onPreview({ sessionId, destination, pattern, mode, conflictStrategy });
     window.electronAPI.saveSettings({
       lastSourceFolders: [],
       lastDestination: destination,
@@ -186,9 +186,9 @@ export function DestinationPanel({ sessionId, counts, onOrganize }: Props) {
         className="btn-primary"
         style={styles.organizeBtn}
         disabled={!destination || readyCount === 0}
-        onClick={handleOrganize}
+        onClick={handlePreview}
       >
-        Organize {readyCount.toLocaleString()} file{readyCount !== 1 ? 's' : ''}
+        Preview {readyCount.toLocaleString()} file{readyCount !== 1 ? 's' : ''}
       </button>
     </div>
   );
