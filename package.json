@@ -11,6 +11,8 @@
     "build": "npm run build:main && npm run build:renderer",
     "build:main": "tsc -p tsconfig.main.json",
     "build:renderer": "webpack --config webpack.renderer.config.js --mode production",
+    "ensure:mac-arches": "node scripts/ensure-mac-arches.js",
+    "predist": "npm run ensure:mac-arches",
     "dist": "npm run build && electron-builder",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -26,6 +28,7 @@
   "dependencies": {
     "better-sqlite3": "^9.4.3",
     "chokidar": "^3.6.0",
+    "electron-updater": "^6.8.3",
     "exiftool-vendored": "^24.6.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

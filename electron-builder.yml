@@ -2,16 +2,68 @@ appId: com.pixelpusher.app
 productName: PixelPusher
 directories:
   output: release
+publish:
+  provider: github
+  owner: christhomas2131
+  repo: pixelpusher
 files:
   - dist/**/*
   - package.json
   - node_modules/**/*
+asarUnpack:
+  - "node_modules/better-sqlite3/**/*"
+  - "node_modules/sharp/**/*"
+  - "node_modules/@img/**/*"
+  - "node_modules/exiftool-vendored*/**/*"
 win:
   target: nsis
   icon: build/icon.ico
 mac:
-  target: dmg
+  category: public.app-category.utilities
   icon: build/icon.icns
+  # Single universal binary for both Apple Silicon and Intel.
+  # Per-arch fallback retained as comments for reference:
+  #   - target: dmg
+  #     arch: [arm64, x64]
+  # The .zip target is required by electron-updater for Mac auto-updates
+  # (Squirrel.Mac reads .zip, not .dmg).
+  target:
+    - target: dmg
+      arch: universal
+    - target: zip
+      arch: universal
+  # Signing strategy:
+  #   identity: null     → unsigned (current — Gatekeeper prompts on first run; TCC silently denies on Sonoma+)
+  #   identity: "Developer ID Application: <Name> (<TeamID>)" → real signing
+  #
+  # electron-builder 24 doesn't accept "-" as an ad-hoc sentinel cleanly.
+  # For interim ad-hoc signing, run after the build:
+  #   codesign --force --deep --sign - release/mac-universal/PixelPusher.app
+  #
+  # When you have a Developer ID cert:
+  #   1. Set identity to your cert name (or remove the line — auto-detect via CSC_LINK)
+  #   2. Set hardenedRuntime: true
+  #   3. Set notarize: true (electron-builder picks up creds from APPLE_* env vars; see .env.example)
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  notarize: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    NSDesktopFolderUsageDescription: "PixelPusher needs access to your Desktop to scan and organize photos and videos stored there."
+    NSDocumentsFolderUsageDescription: "PixelPusher needs access to your Documents to scan and organize photos and videos stored there."
+    NSDownloadsFolderUsageDescription: "PixelPusher needs access to your Downloads folder so it can move photos and videos out of it."
+    NSRemovableVolumesUsageDescription: "PixelPusher needs access to external drives to scan and organize photos and videos stored on them."
+    NSNetworkVolumesUsageDescription: "PixelPusher needs access to network shares to scan and organize photos and videos stored on them."
+dmg:
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
 linux:
   target: AppImage
   icon: build/icon.png
