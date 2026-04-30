@@ -15,6 +15,12 @@ import { useOrganize } from './hooks/useOrganize';
 import { useHash, HashResult } from './hooks/useHash';
 import './styles/globals.css';
 
+const PLATFORM = (typeof window !== 'undefined' && window.electronAPI?.platform) || 'unknown';
+const IS_MAC = PLATFORM === 'darwin';
+if (typeof document !== 'undefined') {
+  document.documentElement.setAttribute('data-platform', PLATFORM);
+}
+
 function HashProgressBar({ processed, total }: { processed: number; total: number }) {
   const pct = total > 0 ? Math.round(processed / total * 100) : 0;
   return (
@@ -172,14 +178,20 @@ function Inner() {
 
   return (
     <div style={styles.root}>
-      <header style={styles.header}>
+      <header
+        className="app-titlebar"
+        style={{
+          ...styles.header,
+          ...(IS_MAC ? ({ paddingLeft: 84, WebkitAppRegion: 'drag' } as React.CSSProperties) : {}),
+        }}
+      >
         <div style={styles.logo}>
           {isDev && <span style={styles.devBadge}>DEV</span>}
           PixelPusher
         </div>
         {error && <div style={styles.errorBanner}>{error}</div>}
         {orgError2 && <div style={{ ...styles.errorBanner, background: 'var(--warn)' }}>{orgError2}</div>}
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           {organizeComplete && sessionId && (
             <>
               <button

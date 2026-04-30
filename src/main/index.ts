@@ -48,6 +48,7 @@ function createWindow(): void {
       ? undefined
       : path.join(__dirname, '../../../build/icon.png'),
     show: false,
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const } : {}),
   });
 
   mainWindow.once('ready-to-show', () => {

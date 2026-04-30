@@ -118,6 +118,9 @@ const api: ElectronAPI = {
     ipcRenderer.on('menu:newSession', h);
     return () => ipcRenderer.removeListener('menu:newSession', h);
   },
+
+  // ── Platform info ────────────────────────────────────────────────────────────
+  platform: process.platform,
 };
 
 contextBridge.exposeInMainWorld('electronAPI', api);

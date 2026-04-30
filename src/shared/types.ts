@@ -253,4 +253,6 @@ export interface ElectronAPI {
   onHeartbeat: (cb: (ts: number) => void) => () => void;
   onThemeChanged: (cb: (theme: Theme) => void) => () => void;
   onNewSession: (cb: () => void) => () => void;
+  // Platform info (set once at preload time)
+  platform: NodeJS.Platform;
 }
