@@ -1,9 +1,11 @@
 import { app, BrowserWindow } from 'electron';
 
-const isMac = process.platform === 'darwin';
+// process.platform is checked per-call (rather than cached at import time)
+// so unit tests can stub it without re-importing the module.
+const onMac = () => process.platform === 'darwin';
 
 export function setDockProgress(win: BrowserWindow | null, processed: number, total: number): void {
-  if (!isMac || !win || win.isDestroyed()) return;
+  if (!onMac() || !win || win.isDestroyed()) return;
   if (total <= 0) {
     win.setProgressBar(2); // indeterminate
     return;
@@ -13,21 +15,21 @@ export function setDockProgress(win: BrowserWindow | null, processed: number, to
 }
 
 export function clearDockProgress(win: BrowserWindow | null): void {
-  if (!isMac || !win || win.isDestroyed()) return;
+  if (!onMac() || !win || win.isDestroyed()) return;
   win.setProgressBar(-1);
 }
 
 export function setDockBadge(text: string): void {
-  if (!isMac || !app.dock) return;
+  if (!onMac() || !app.dock) return;
   app.dock.setBadge(text);
 }
 
 export function clearDockBadge(): void {
-  if (!isMac || !app.dock) return;
+  if (!onMac() || !app.dock) return;
   app.dock.setBadge('');
 }
 
 export function dockBounce(type: 'critical' | 'informational' = 'informational'): void {
-  if (!isMac || !app.dock) return;
+  if (!onMac() || !app.dock) return;
   app.dock.bounce(type);
 }
