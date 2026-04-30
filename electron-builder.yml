@@ -22,16 +22,23 @@ mac:
   category: public.app-category.utilities
   icon: build/icon.icns
   # Single universal binary for both Apple Silicon and Intel.
-  # Per-arch fallback retained as comments for reference:
-  #   - target: dmg
-  #     arch: [arm64, x64]
   # The .zip target is required by electron-updater for Mac auto-updates
   # (Squirrel.Mac reads .zip, not .dmg).
+  # Note: electron-builder 26's bundled dmgbuild was built for macOS 15.7
+  # and links libintl.8.dylib (gettext). On macOS < 14, the build host
+  # needs `brew install gettext` once. CI on macos-latest doesn't need this.
   target:
     - target: dmg
       arch: universal
     - target: zip
       arch: universal
+  # ensure-mac-arches.js installs both sharp variants in node_modules, so each
+  # per-arch electron-builder packaging step inherits both. The variants are
+  # byte-identical across the x64-temp and arm64-temp builds, which causes
+  # @electron/universal v2 to error unless they're whitelisted here.
+  # x64ArchFiles tells @electron/universal "these duplicate files are OK,
+  # ship them as-is in the merged universal bundle."
+  x64ArchFiles: "**/{sharp-darwin-arm64,sharp-darwin-x64,sharp-libvips-darwin-arm64,sharp-libvips-darwin-x64}/**"
   # Signing strategy:
   #   identity: null     → unsigned (current — Gatekeeper prompts on first run; TCC silently denies on Sonoma+)
   #   identity: "Developer ID Application: <Name> (<TeamID>)" → real signing

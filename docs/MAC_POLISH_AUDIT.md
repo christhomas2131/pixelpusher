@@ -6,6 +6,8 @@
 
 **Status update (post-implementation pass, same date):** items 2, 3, 4, 5, 6, 7 implemented and verified at the build/launch level. Items 1 remains blocked on Apple Developer Program enrollment ($99/yr). Implementation details are appended to each item section below.
 
+**Hardening pass (later same day):** added GitHub Actions CI on `macos-latest`, unit tests for the new Mac surface (mac-dock helpers, menu structure), and bumped Electron 29 → 41 / electron-builder 24 → 26 / better-sqlite3 9 → 12 / @types/node 20 → 22. Required Node bump 20 → 22 on the dev host. Two regressions surfaced and were fixed during the bump: `@electron/universal` v2 stricter mach-o merge required `mac.x64ArchFiles` whitelist for the per-arch sharp prebuilds; `electron-builder` v26 bundled dmgbuild needed `gettext` from Homebrew on macOS < 14 (or just use macos-latest in CI). All 94 tests pass; universal `.dmg` (226 MB) + `.zip` (219 MB) both build clean.
+
 ---
 
 ## Executive Summary
