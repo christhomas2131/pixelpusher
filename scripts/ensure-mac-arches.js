@@ -1,15 +1,18 @@
 // Ensures both arm64 and x64 sharp prebuilds are present in node_modules so
-// electron-builder can produce universal (or per-arch) macOS builds regardless
-// of which architecture this machine runs on.
+// electron-builder can produce per-arch macOS builds regardless of which
+// architecture this machine runs on.
 //
 // sharp ships its native code via @img/sharp-darwin-<arch> packages declared
-// as optionalDependencies, with cpu/os filters that make npm skip the variant
-// for the host. On an Intel Mac, only sharp-darwin-x64 lands in node_modules
-// — building an arm64 .app would then bundle the wrong binary.
+// as optionalDependencies, with cpu/os filters that make npm skip variants
+// that don't match the host. On an Intel Mac, only sharp-darwin-x64 lands
+// in node_modules — building an arm64 .app would then bundle the wrong
+// binary, and the resulting app crashes on launch when sharp's loader can't
+// find a matching prebuild.
 //
-// `npm install --cpu=<arch> --os=darwin --include=optional --no-save sharp`
-// bypasses the host filter and forces the cross-arch variant into place
-// without touching package.json.
+// Two-pass `npm install --cpu=…` doesn't work: each pass swaps out the
+// other arch's variant ("added 5, removed 5"). Instead we install the
+// cross-arch packages **directly by name** (bypassing the optionalDependency
+// CPU filter) after letting npm install the host arch normally.
 
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -25,15 +28,47 @@ function exists(arch) {
   );
 }
 
-function ensure(arch) {
+function sharpVersion() {
+  // Pick the version off whichever variant is currently installed; both
+  // variants are kept in lockstep upstream.
+  for (const variant of ['sharp-darwin-x64', 'sharp-darwin-arm64']) {
+    const pkgJson = path.join(NODE_MODULES_IMG, variant, 'package.json');
+    if (fs.existsSync(pkgJson)) {
+      return JSON.parse(fs.readFileSync(pkgJson, 'utf8')).version;
+    }
+  }
+  throw new Error('No sharp prebuild present at all — run `npm install` first');
+}
+
+function libvipsVersion() {
+  for (const variant of ['sharp-libvips-darwin-x64', 'sharp-libvips-darwin-arm64']) {
+    const pkgJson = path.join(NODE_MODULES_IMG, variant, 'package.json');
+    if (fs.existsSync(pkgJson)) {
+      return JSON.parse(fs.readFileSync(pkgJson, 'utf8')).version;
+    }
+  }
+  throw new Error('No libvips prebuild present at all — run `npm install` first');
+}
+
+function installCrossArch(arch) {
   if (exists(arch)) {
     console.log(`[mac-arches] sharp-darwin-${arch} already present`);
     return;
   }
-  console.log(`[mac-arches] installing sharp-darwin-${arch}…`);
+  const sv = sharpVersion();
+  const lv = libvipsVersion();
+  console.log(`[mac-arches] installing @img/sharp-darwin-${arch}@${sv} + @img/sharp-libvips-darwin-${arch}@${lv}…`);
+  // --no-save: don't pollute package.json
+  // --force:   override npm's cpu/os filtering on optional deps
   execFileSync(
     'npm',
-    ['install', '--no-save', '--include=optional', `--cpu=${arch}`, '--os=darwin', 'sharp'],
+    [
+      'install',
+      '--no-save',
+      '--force',
+      `@img/sharp-darwin-${arch}@${sv}`,
+      `@img/sharp-libvips-darwin-${arch}@${lv}`,
+    ],
     { stdio: 'inherit', cwd: ROOT },
   );
   if (!exists(arch)) {
@@ -48,6 +83,16 @@ if (process.platform !== 'darwin') {
   process.exit(0);
 }
 
-ensure('arm64');
-ensure('x64');
+// Whichever arch is missing gets installed by name. We do NOT swap arches via
+// --cpu/--os flags — those remove the existing variant.
+const archMissing = !exists('arm64') ? 'arm64' : !exists('x64') ? 'x64' : null;
+if (archMissing) {
+  installCrossArch(archMissing);
+}
+if (!exists('arm64') || !exists('x64')) {
+  console.error('[mac-arches] FAILED: not all arches present after install');
+  console.error('  arm64:', exists('arm64'));
+  console.error('  x64:  ', exists('x64'));
+  process.exit(1);
+}
 console.log('[mac-arches] both arches present');

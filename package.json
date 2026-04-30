@@ -37,6 +37,9 @@
     "react-dom": "^19.2.5",
     "sharp": "^0.33.3"
   },
+  "overrides": {
+    "@electron/asar": "^4.2.0"
+  },
   "devDependencies": {
     "@electron/rebuild": "^3.6.0",
     "@playwright/test": "^1.59.1",
