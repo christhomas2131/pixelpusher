@@ -8,6 +8,7 @@ import { getSettings, saveSettings } from './settings-manager';
 import { checkpointDb, closeDb } from './database';
 import { closeExiftool } from './exif-reader';
 import { getLicenseInfo, activateLicense } from './license-manager';
+import { initAutoUpdate } from './auto-update';
 
 // Must be first — raises heap from 1.5GB to 4GB
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096 --expose-gc');
@@ -154,6 +155,7 @@ app.whenReady().then(() => {
   registerIpcHandlers(getWindow);
   createWindow();
   startMemoryWatchdog();
+  initAutoUpdate(getWindow);
 
   setInterval(() => {
     const win = getWindow();
