@@ -1,59 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import initSqlJs, { Database } from 'sql.js';
 import crypto from 'crypto';
+import { MIGRATIONS } from '../src/main/migrations';
 
 // Tests use sql.js (pure JS SQLite) to verify query logic without native modules.
 // Production code uses better-sqlite3 rebuilt for Electron at runtime.
-
-const SQL_SCHEMA = `
-  CREATE TABLE scan_sessions (
-    id TEXT PRIMARY KEY,
-    source_folders TEXT NOT NULL,
-    started_at TEXT NOT NULL,
-    completed_at TEXT,
-    total_files INTEGER DEFAULT 0,
-    total_size INTEGER DEFAULT 0,
-    scan_depth TEXT DEFAULT 'quick',
-    scan_speed TEXT DEFAULT 'safe',
-    status TEXT DEFAULT 'running'
-  );
-  CREATE TABLE files (
-    id TEXT PRIMARY KEY,
-    filename TEXT NOT NULL,
-    source_path TEXT NOT NULL,
-    proposed_destination TEXT,
-    size INTEGER NOT NULL,
-    date_source TEXT,
-    date_taken TEXT,
-    camera_make TEXT,
-    camera_model TEXT,
-    gps_lat REAL,
-    gps_lng REAL,
-    width INTEGER,
-    height INTEGER,
-    format TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    junk_reason TEXT,
-    junk_confidence TEXT,
-    phash TEXT,
-    file_category TEXT DEFAULT 'images',
-    extended_meta TEXT,
-    metadata_depth TEXT DEFAULT 'quick',
-    error_message TEXT,
-    source_index INTEGER DEFAULT 0,
-    source_label TEXT DEFAULT 'Source A',
-    scan_session_id TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now'))
-  );
-  CREATE INDEX idx_files_session ON files(scan_session_id);
-`;
+// Schema is sourced from MIGRATIONS so the test fixture cannot drift from prod.
 
 let SQL: Awaited<ReturnType<typeof initSqlJs>>;
 
 async function createTestDb(): Promise<Database> {
   if (!SQL) SQL = await initSqlJs();
   const db = new SQL.Database();
-  db.run(SQL_SCHEMA);
+  for (const m of MIGRATIONS) db.run(m.up);
   return db;
 }
 

@@ -3,6 +3,8 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import { FileRecord, FileCounts, GetFilesPageRequest, GetFilesPageResponse, DupeGroup, DupeGroupMember, DupeAction } from '../shared/types';
+import { runMigrations } from './migrations';
+import { logger } from './logger';
 
 const DB_DIR = path.join(os.homedir(), '.photomove');
 const DB_PATH = path.join(DB_DIR, 'library.db');
@@ -22,24 +24,28 @@ export function getDb(): Database.Database {
   return db;
 }
 
+function applyPragmas(instance: Database.Database): void {
+  instance.pragma('journal_mode = WAL');
+  instance.pragma('synchronous = NORMAL');
+  instance.pragma('cache_size = -64000');
+  instance.pragma('foreign_keys = ON');
+  instance.pragma('busy_timeout = 10000');
+}
+
 function openDb(dbPath: string): Database.Database {
   let instance: Database.Database;
   try {
     instance = new Database(dbPath);
-    instance.pragma('journal_mode = WAL');
-    instance.pragma('synchronous = NORMAL');
-    instance.pragma('cache_size = -64000');
-    instance.pragma('foreign_keys = ON');
-    instance.pragma('busy_timeout = 10000');
+    applyPragmas(instance);
 
-    // Health check: detect corruption before creating tables
+    // Health check: detect corruption before applying migrations
     const check = instance.pragma('quick_check', { simple: true }) as string;
     if (check !== 'ok') {
       instance.close();
       throw new Error(`quick_check: ${check}`);
     }
 
-    createTables(instance);
+    runMigrations(instance, undefined, logger);
     return instance;
   } catch (err: any) {
     // Attempt to back up the corrupt file and start fresh
@@ -49,12 +55,8 @@ function openDb(dbPath: string): Database.Database {
       console.error(`[database] Corrupt DB backed up to ${corruptPath}, creating fresh.`);
     }
     const fresh = new Database(dbPath);
-    fresh.pragma('journal_mode = WAL');
-    fresh.pragma('synchronous = NORMAL');
-    fresh.pragma('cache_size = -64000');
-    fresh.pragma('foreign_keys = ON');
-    fresh.pragma('busy_timeout = 10000');
-    createTables(fresh);
+    applyPragmas(fresh);
+    runMigrations(fresh, undefined, logger);
     return fresh;
   }
 }
@@ -68,89 +70,6 @@ export function closeDb(): void {
   db = null;
 }
 
-function createTables(db: Database.Database) {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS scan_sessions (
-      id TEXT PRIMARY KEY,
-      source_folders TEXT NOT NULL,
-      started_at TEXT NOT NULL,
-      completed_at TEXT,
-      total_files INTEGER DEFAULT 0,
-      total_size INTEGER DEFAULT 0,
-      scan_depth TEXT DEFAULT 'quick',
-      scan_speed TEXT DEFAULT 'safe',
-      status TEXT DEFAULT 'running'
-    );
-
-    CREATE TABLE IF NOT EXISTS files (
-      id TEXT PRIMARY KEY,
-      filename TEXT NOT NULL,
-      source_path TEXT NOT NULL,
-      proposed_destination TEXT,
-      size INTEGER NOT NULL,
-      date_source TEXT,
-      date_taken TEXT,
-      camera_make TEXT,
-      camera_model TEXT,
-      gps_lat REAL,
-      gps_lng REAL,
-      width INTEGER,
-      height INTEGER,
-      format TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending',
-      junk_reason TEXT,
-      junk_confidence TEXT,
-      phash TEXT,
-      file_category TEXT DEFAULT 'images',
-      extended_meta TEXT,
-      metadata_depth TEXT DEFAULT 'quick',
-      error_message TEXT,
-      source_index INTEGER DEFAULT 0,
-      source_label TEXT DEFAULT 'Source A',
-      scan_session_id TEXT NOT NULL,
-      created_at TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_files_session ON files(scan_session_id);
-    CREATE INDEX IF NOT EXISTS idx_files_session_status ON files(scan_session_id, status);
-    CREATE INDEX IF NOT EXISTS idx_files_session_id ON files(scan_session_id, id);
-    CREATE INDEX IF NOT EXISTS idx_files_phash ON files(phash) WHERE phash IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS idx_files_date ON files(scan_session_id, date_taken);
-
-    CREATE TABLE IF NOT EXISTS dupe_groups (
-      id TEXT PRIMARY KEY,
-      scan_session_id TEXT NOT NULL,
-      member_count INTEGER NOT NULL DEFAULT 0,
-      status TEXT NOT NULL DEFAULT 'pending',
-      created_at TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_dupe_groups_session ON dupe_groups(scan_session_id);
-
-    CREATE TABLE IF NOT EXISTS dupe_group_members (
-      group_id TEXT NOT NULL,
-      file_id TEXT NOT NULL,
-      is_keeper INTEGER NOT NULL DEFAULT 0,
-      rank INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (group_id, file_id)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_dupe_members_group ON dupe_group_members(group_id);
-    CREATE INDEX IF NOT EXISTS idx_dupe_members_file  ON dupe_group_members(file_id);
-
-    CREATE TABLE IF NOT EXISTS operation_progress (
-      session_id TEXT PRIMARY KEY,
-      total_files INTEGER,
-      processed_files INTEGER DEFAULT 0,
-      successful_files INTEGER DEFAULT 0,
-      error_files INTEGER DEFAULT 0,
-      skipped_files INTEGER DEFAULT 0,
-      last_processed_id TEXT,
-      status TEXT DEFAULT 'running',
-      updated_at TEXT DEFAULT (datetime('now'))
-    );
-  `);
-}
 
 export function insertScanSession(session: {
   id: string;
