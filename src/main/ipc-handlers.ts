@@ -36,7 +36,7 @@ import { checkTakeout } from './takeout-detector';
 import { getLicenseInfo, activateLicense, deactivateLicense, isPro } from './license-manager';
 import { BATCH_SIZE_HASH } from '../shared/constants';
 import { FREE_FILE_CAP, FREE_DUPE_GROUPS_CAP, proRequiredError } from '../shared/pro-features';
-import { defaultCategoriesForMode } from '../shared/mode';
+import { defaultCategoriesForMode, type Mode } from '../shared/mode';
 
 let scanRunning = false;
 let cancelScan = false;
@@ -89,7 +89,8 @@ async function extractMetadataPhase(
   scanDepth: ScanDepth,
   scanSpeed: ScanSpeed,
   totalDiscovered: number,
-  win: BrowserWindow
+  win: BrowserWindow,
+  mode: Mode
 ): Promise<void> {
   const { batchSize, maxProcs } = getScanSpeedConfig(scanSpeed);
   const total = getPendingCount(sessionId);
@@ -112,7 +113,7 @@ async function extractMetadataPhase(
 
     // Read EXIF for entire batch in parallel
     const results = await Promise.allSettled(
-      batch.map(f => readFileMeta(f, scanDepth, maxProcs))
+      batch.map(f => readFileMeta(f, scanDepth, maxProcs, mode))
     );
 
     // Build DB update rows
@@ -131,6 +132,7 @@ async function extractMetadataPhase(
           gps_lng: meta.gps_lng,
           width: meta.width,
           height: meta.height,
+          extended_meta: meta.extended_meta,
           metadata_depth: scanDepth,
           status: isJunk ? 'junk' : (file.status === 'pending' ? 'ready' : file.status),
           error_message: meta.error_message,
@@ -148,6 +150,7 @@ async function extractMetadataPhase(
         gps_lng: null,
         width: null,
         height: null,
+        extended_meta: null,
         metadata_depth: scanDepth,
         status: 'error',
         error_message: 'extraction_failed',
@@ -413,7 +416,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
         // Phase 2: Metadata extraction
         if (totalFiles > 0 && !cancelScan) {
-          await extractMetadataPhase(sessionId, options.scanDepth, options.scanSpeed, totalFiles, win);
+          await extractMetadataPhase(sessionId, options.scanDepth, options.scanSpeed, totalFiles, win, options.mode);
         }
 
         completeScanSession(sessionId, totalFiles, totalSize);

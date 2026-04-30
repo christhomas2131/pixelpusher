@@ -135,7 +135,7 @@ async function walkDir(
       continue;
     }
 
-    const junk = detectJunk(fullPath, stat.size);
+    const junk = detectJunk(fullPath, stat.size, category);
 
     const record: Omit<FileRecord, 'created_at'> = {
       id: crypto.randomUUID(),

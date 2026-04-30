@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { logger } from './logger';
 import { ScanDepth, DateSource } from '../shared/types';
+import type { Mode } from '../shared/mode';
 import { findSidecarForFile, parseTakeoutSidecar, extractDateFromSidecar } from './takeout-detector';
 
 let _exiftool: ExifTool | null = null;
@@ -41,6 +42,7 @@ export interface ExifResult {
   gps_lng: number | null;
   width: number | null;
   height: number | null;
+  extended_meta: string | null;
   status: 'ready' | 'error';
   error_message: string | null;
   junk_reason: string | null;
@@ -50,7 +52,8 @@ export interface ExifResult {
 export async function readFileMeta(
   file: { id: string; source_path: string; filename: string; status: string },
   scanDepth: ScanDepth,
-  maxProcs = 1
+  maxProcs = 1,
+  mode: Mode = 'photos'
 ): Promise<ExifResult> {
   const tool = getExiftool(maxProcs);
   const args = scanDepth === 'quick' ? ['-fast2'] : [];
@@ -80,6 +83,7 @@ export async function readFileMeta(
     gps_lng: null,
     width: null,
     height: null,
+    extended_meta: null,
     status: 'ready',
     error_message: null,
     junk_reason: null,
@@ -91,7 +95,37 @@ export async function readFileMeta(
   result.date_taken = date;
   result.date_source = source;
 
-  if (tags && scanDepth === 'full') {
+  if (mode === 'datahoarder' && tags) {
+    // Document/Office/audio/design/3D files: re-purpose camera_make / camera_model
+    // for the document's source. Author goes to camera_make so the existing
+    // {CAMERA} pattern token shows it; Creator/Producer goes to camera_model
+    // (e.g. "Microsoft Word", "Adobe Acrobat", "Pages").
+    const author = (tags as Record<string, unknown>).Author;
+    const creator = (tags as Record<string, unknown>).Creator
+      ?? (tags as Record<string, unknown>).Producer
+      ?? (tags as Record<string, unknown>).CreatorTool
+      ?? (tags as Record<string, unknown>).Application;
+    if (typeof author === 'string' && author.trim()) {
+      result.camera_make = author.trim();
+    }
+    if (typeof creator === 'string' && creator.trim()) {
+      result.camera_model = creator.trim();
+    }
+    // Capture the doc title (and a few cousins) for later use in clustering
+    // and search. JSON keeps the column flexible without a schema migration.
+    const extras: Record<string, unknown> = {};
+    const title = (tags as Record<string, unknown>).Title;
+    const subject = (tags as Record<string, unknown>).Subject;
+    const keywords = (tags as Record<string, unknown>).Keywords;
+    const pageCount = (tags as Record<string, unknown>).PageCount;
+    if (typeof title === 'string' && title.trim()) extras.title = title.trim();
+    if (typeof subject === 'string' && subject.trim()) extras.subject = subject.trim();
+    if (typeof keywords === 'string' && keywords.trim()) extras.keywords = keywords.trim();
+    if (typeof pageCount === 'number') extras.pageCount = pageCount;
+    if (Object.keys(extras).length > 0) {
+      result.extended_meta = JSON.stringify(extras);
+    }
+  } else if (tags && scanDepth === 'full') {
     if (tags.Make) result.camera_make = String(tags.Make).trim();
     if (tags.Model) result.camera_model = String(tags.Model).trim();
 
@@ -103,15 +137,15 @@ export async function readFileMeta(
     if (typeof tags.GPSLatitude === 'number') result.gps_lat = tags.GPSLatitude;
     if (typeof tags.GPSLongitude === 'number') result.gps_lng = tags.GPSLongitude;
   } else if (tags) {
-    // Quick scan: still grab dimensions if available (needed for junk detection)
+    // Quick scan (photos): still grab dimensions if available (needed for junk detection)
     const w = tags.ImageWidth ?? tags.ExifImageWidth;
     const h = tags.ImageHeight ?? tags.ExifImageHeight;
     if (typeof w === 'number') result.width = w;
     if (typeof h === 'number') result.height = h;
   }
 
-  // Post-EXIF dimension-based junk detection
-  if (result.width !== null && result.height !== null) {
+  // Post-EXIF dimension-based junk detection (photos only — docs don't have meaningful dims)
+  if (mode === 'photos' && result.width !== null && result.height !== null) {
     if (result.width < 200 && result.height < 200) {
       result.junk_reason = 'small_dimensions';
       result.junk_confidence = 'medium';

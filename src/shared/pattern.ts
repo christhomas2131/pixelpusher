@@ -1,4 +1,4 @@
-export type FileCategory = 'images' | 'videos' | 'raw';
+export type FileCategory = 'images' | 'videos' | 'raw' | 'documents' | 'audio' | 'design' | '3d';
 
 const MONTH_NAMES = [
   'January','February','March','April','May','June',
@@ -21,6 +21,10 @@ const TYPE_LABELS: Record<string, string> = {
   images: 'Photos',
   videos: 'Videos',
   raw: 'RAW',
+  documents: 'Documents',
+  audio: 'Music',
+  design: 'Design',
+  '3d': '3D',
 };
 
 export interface PatternContext {

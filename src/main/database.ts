@@ -401,6 +401,7 @@ export interface ExifUpdateRow {
   gps_lng: number | null;
   width: number | null;
   height: number | null;
+  extended_meta: string | null;
   metadata_depth: string;
   status: string;
   error_message: string | null;
@@ -420,6 +421,7 @@ export function updateFilesExifBatch(updates: ExifUpdateRow[]): void {
       gps_lng         = @gps_lng,
       width           = @width,
       height          = @height,
+      extended_meta   = @extended_meta,
       metadata_depth  = @metadata_depth,
       status          = @status,
       error_message   = @error_message,
