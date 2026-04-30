@@ -18,6 +18,7 @@ import { assertDriveReady } from './drive-check';
 import { getSettings, saveSettings } from './settings-manager';
 import { logger } from './logger';
 import { LOG_DIR } from './logger';
+import { setDockProgress, clearDockProgress, setDockBadge, clearDockBadge } from './mac-dock';
 import {
   ScanOptions, AppSettings, GetFilesPageRequest,
   ScanDepth, ScanSpeed, ScanProgress,
@@ -176,6 +177,7 @@ async function extractMetadataPhase(
         totalWaves,
       };
       win.webContents.send('scan:progress', progress);
+      setDockProgress(win, processed, total);
     }
 
     if (processed % 500 === 0) {
@@ -308,6 +310,7 @@ async function runOrganize(options: OrganizeOptions, win: BrowserWindow): Promis
           totalBytes: totalSize,
         };
         win.webContents.send('organize:progress', progress);
+        setDockProgress(win, processed, total);
       }
 
       if (processed % 500 === 0) {
@@ -343,6 +346,11 @@ async function runOrganize(options: OrganizeOptions, win: BrowserWindow): Promis
       win.webContents.send('organize:complete', result);
     }
 
+    clearDockProgress(win);
+    if (errors > 0) {
+      setDockBadge(String(Math.min(errors, 99)));
+    }
+
     organizeRunning = false;
   }
 }
@@ -355,6 +363,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     if (scanRunning) throw new Error('Scan already running');
     scanRunning = true;
     cancelScan = false;
+    clearDockBadge();
     const sessionId = crypto.randomUUID();
 
     const win = getWindow();
@@ -389,6 +398,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
             phase: 'discovering', discovered: 0, processed: 0, total: 0,
             eta: null, filesPerSecond: 0, wave: 0, totalWaves: 0,
           } as ScanProgress);
+          setDockProgress(win, 0, 0); // indeterminate while discovering
         }
 
         const enabledCategories = (options.enabledCategories ?? getSettings().enabledFileCategories) as FileCategory[];
@@ -414,6 +424,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       } finally {
         clearTimeout(scanTimeout);
         scanRunning = false;
+        clearDockProgress(win);
       }
     });
 
@@ -454,6 +465,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
   ipcMain.handle('organize:start', async (_event, options: OrganizeOptions) => {
     if (organizeRunning) throw new Error('Organize already running');
+    clearDockBadge();
 
     if (!isPro()) {
       const { count } = getOrganizeTotals(options.sessionId);
@@ -483,6 +495,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         if (!win.isDestroyed()) {
           win.webContents.send('organize:error', String(err));
         }
+        clearDockProgress(win);
       } finally {
         clearTimeout(organizeTimeout);
       }
@@ -584,6 +597,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
               eta: rate.getETA(total - processed),
             };
             win.webContents.send('hash:progress', progress);
+            setDockProgress(win, processed, total);
           }
 
           if (processed % 500 === 0) {
@@ -607,6 +621,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         }
       } finally {
         hashRunning = false;
+        clearDockProgress(win);
       }
     });
   });
