@@ -1,4 +1,5 @@
 import { ExifTool, Tags } from 'exiftool-vendored';
+import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { logger } from './logger';
@@ -40,10 +41,15 @@ export async function closeExiftool(): Promise<void> {
     } catch (err) {
       logger.warn('exif', 'Error ending ExifTool', String(err));
     }
-    // NOTE: previous versions ran `taskkill /F /IM perl.exe /T` on Windows
-    // here. Removed — it killed every perl process on the machine, not just
-    // ExifTool's. Workers should exit cleanly via end(); if they don't, the
-    // OS will reap orphans on process exit.
+    // Hammer mode (opt-in). Previous versions unconditionally ran
+    // `taskkill /F /IM perl.exe /T` here on Windows, which killed every
+    // perl process on the machine — fine when ExifTool was the only Perl
+    // around, but it would also reap Strawberry Perl, Git's bundled perl,
+    // etc. Now off by default; set PIXELPUSHER_HARD_KILL_PERL=1 to restore
+    // the old behavior for cases where exiftool-vendored's end() hangs.
+    if (process.platform === 'win32' && process.env.PIXELPUSHER_HARD_KILL_PERL === '1') {
+      try { execSync('taskkill /F /IM perl.exe /T', { stdio: 'ignore' }); } catch {}
+    }
     await new Promise(r => setTimeout(r, 500));
   }
 }

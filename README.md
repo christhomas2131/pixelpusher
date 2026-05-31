@@ -137,6 +137,11 @@ PixelPusher runs entirely on your computer. No photos, metadata, or telemetry le
 - [ ] Smart album suggestions
 - [ ] Folder watcher for auto-organizing new files
 
+## Environment Variables
+
+- `SENTRY_DSN` — opt-in crash reporting (renderer + main); leave unset for fully local operation.
+- `PIXELPUSHER_HARD_KILL_PERL=1` — **Windows only.** Restores the legacy behavior of force-killing every `perl.exe` on the machine after each ExifTool shutdown. Off by default because it also reaps unrelated Perl processes (Strawberry Perl, Git's perl). Enable only if you see lingering Perl workers after PixelPusher quits.
+
 ## Report Bugs
 
 Open an issue at [github.com/christhomas2131/pixelpusher/issues](https://github.com/christhomas2131/pixelpusher/issues) and include:
