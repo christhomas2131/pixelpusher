@@ -114,22 +114,29 @@ function Inner() {
     if (settings) window.electronAPI.saveSettings({ ...settings, leftPanelWidth: DEFAULT_PANEL_WIDTH });
   };
 
-  useEffect(() => {
-    if (scanSessionId && state === 'done') setSessionId(scanSessionId);
-  }, [scanSessionId, state]);
+  // Pin the latest `refresh` in a ref so polling / one-shot effects always
+  // call the freshest closure. Previous version captured `refresh` at the
+  // moment `state` last changed, which meant filter/sort changes mid-scan
+  // were ignored by the in-flight setInterval.
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
 
   useEffect(() => {
-    if (state === 'done') refresh();
+    if (scanSessionId && state === 'done') setSessionId(scanSessionId);
+  }, [scanSessionId, state, setSessionId]);
+
+  useEffect(() => {
+    if (state === 'done') refreshRef.current();
   }, [state]);
 
   useEffect(() => {
     if (state !== 'scanning' || !scanSessionId) return;
-    const id = setInterval(refresh, 2000);
+    const id = setInterval(() => refreshRef.current(), 2000);
     return () => clearInterval(id);
   }, [state, scanSessionId]);
 
   useEffect(() => {
-    if (hashState === 'complete') refresh();
+    if (hashState === 'complete') refreshRef.current();
   }, [hashState]);
 
   const handleNewScan = () => {

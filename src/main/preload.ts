@@ -42,6 +42,7 @@ const api: ElectronAPI = {
   getPictures:      ()           => ipcRenderer.invoke('dialog:getPictures'),
   openLogFolder:    ()           => ipcRenderer.invoke('shell:openLogFolder'),
   openPath:         (p)          => ipcRenderer.invoke('shell:openPath', p),
+  getThumbnail:     (p, size)    => ipcRenderer.invoke('image:getThumbnail', p, size),
 
   // ── Scan events ──────────────────────────────────────────────────────────────
   onScanProgress: (cb) => {

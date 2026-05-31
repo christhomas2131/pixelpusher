@@ -50,6 +50,20 @@ function libvipsVersion() {
   throw new Error('No libvips prebuild present at all — run `npm install` first');
 }
 
+// Resolve the npm CLI. When this script runs from `npm run …`, npm sets
+// `npm_execpath` to the absolute path of the npm JS entrypoint — using that
+// is safer than relying on $PATH (devs whose primary tool is pnpm or yarn
+// may have a stale Homebrew npm shadowing the one their `package.json`
+// expects).
+function npmInvocation() {
+  const npmExec = process.env.npm_execpath;
+  if (npmExec && fs.existsSync(npmExec)) {
+    // npm_execpath points at the JS file; run it under the current Node.
+    return { cmd: process.execPath, leadingArgs: [npmExec] };
+  }
+  return { cmd: 'npm', leadingArgs: [] };
+}
+
 function installCrossArch(arch) {
   if (exists(arch)) {
     console.log(`[mac-arches] sharp-darwin-${arch} already present`);
@@ -58,13 +72,20 @@ function installCrossArch(arch) {
   const sv = sharpVersion();
   const lv = libvipsVersion();
   console.log(`[mac-arches] installing @img/sharp-darwin-${arch}@${sv} + @img/sharp-libvips-darwin-${arch}@${lv}…`);
-  // --no-save: don't pollute package.json
-  // --force:   override npm's cpu/os filtering on optional deps
+  const { cmd, leadingArgs } = npmInvocation();
+  // --no-save:          don't pollute package.json
+  // --no-package-lock:  the cross-arch package is build data, not a
+  //                     dependency — keep the lockfile clean
+  // --ignore-scripts:   don't re-trigger postinstall (e.g. electron-rebuild)
+  // --force:            override npm's cpu/os filtering on optional deps
   execFileSync(
-    'npm',
+    cmd,
     [
+      ...leadingArgs,
       'install',
       '--no-save',
+      '--no-package-lock',
+      '--ignore-scripts',
       '--force',
       `@img/sharp-darwin-${arch}@${sv}`,
       `@img/sharp-libvips-darwin-${arch}@${lv}`,

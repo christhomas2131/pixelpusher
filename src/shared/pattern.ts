@@ -39,7 +39,10 @@ export function resolvePattern(pattern: string, ctx: PatternContext): string {
   if (!pattern) return 'Unknown';
 
   const { date, cameraModel, category, format, yearRangeSize = 5 } = ctx;
-  const d = date ?? null;
+  const raw = date ?? null;
+  // Guard against `Invalid Date` (truthy but getFullYear() → NaN, which
+  // would emit folder names like "NaN/NaN"). Treat as no-date.
+  const d = raw && !isNaN(raw.getTime()) ? raw : null;
 
   if (!d) {
     return pattern.replace(/\{[^}]+\}/g, 'Unknown');

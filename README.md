@@ -3,7 +3,7 @@
 > Organize thousands of photos and videos into clean, date-based folders. Fast, safe, local.
 
 ![PixelPusher](https://img.shields.io/badge/version-1.0.0-blue)
-![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)
 ![License](https://img.shields.io/badge/license-Proprietary-red)
 
 PixelPusher is a desktop app for anyone drowning in unorganized photos. Point it at a messy folder (or a whole drive), and it'll read the dates from your photos and videos, find duplicates, and organize everything into a folder structure you choose. Nothing leaves your computer.
@@ -24,6 +24,24 @@ PixelPusher is a desktop app for anyone drowning in unorganized photos. Point it
 
 ## Installation
 
+### macOS
+
+1. Download the matching `.dmg` from the [latest release](https://github.com/christhomas2131/pixelpusher/releases/latest):
+   - Apple Silicon (M1/M2/M3/M4): `PixelPusher-1.0.0-arm64.dmg`
+   - Intel: `PixelPusher-1.0.0-x64.dmg`
+2. Open the `.dmg` and drag PixelPusher into Applications.
+3. Launch from Applications.
+
+**Note on Gatekeeper:** PixelPusher is not currently code-signed on macOS, so the first launch will show a "PixelPusher cannot be opened because the developer cannot be verified" dialog. To open it:
+
+- Right-click PixelPusher in Applications → **Open** → **Open** in the second dialog, **or**
+- Run once from Terminal to clear the quarantine flag:
+  ```
+  xattr -d com.apple.quarantine /Applications/PixelPusher.app
+  ```
+
+This is standard for small indie apps until a Developer ID code-signing certificate is purchased + notarization is enabled.
+
 ### Windows
 
 1. Download `PixelPusher Setup 1.0.0.exe` from the [latest release](https://github.com/christhomas2131/pixelpusher/releases/latest)
@@ -34,6 +52,7 @@ PixelPusher is a desktop app for anyone drowning in unorganized photos. Point it
 
 ### System Requirements
 
+- macOS 12 (Monterey) or later — Apple Silicon or Intel
 - Windows 10 or 11 (64-bit)
 - 8 GB RAM recommended for libraries over 20,000 files
 - 500 MB free disk space for the app itself
@@ -76,6 +95,13 @@ Build your own folder structure using these tokens:
 - `{CAMERA}/{YYYY}` → `iPhone 14 Pro/2024`
 - `{TYPE_LABEL}/{YYYY}` → `Photos/2024` and `Videos/2024`
 
+**Mode-aware tokens:** `{TYPE_LABEL}` and `{CAMERA}` resolve differently depending on the active profile:
+
+| Token | PixelPusher (photos) | DataHoarder |
+|-------|----------------------|-------------|
+| `{TYPE_LABEL}` | Photos / Videos / RAW | Documents / Music / Design / 3D |
+| `{CAMERA}` | EXIF camera model (e.g. iPhone 15 Pro) | Document author (e.g. "Microsoft Word", PDF author) |
+
 ## Supported File Types
 
 **Photos:** JPG, JPEG, PNG, HEIC, HEIF, RAW (CR2, CR3, NEF, ARW, DNG, RAF, ORF, RW2, and more)
@@ -86,24 +112,27 @@ Build your own folder structure using these tokens:
 
 ## Privacy
 
-PixelPusher runs entirely on your computer. No photos, metadata, or telemetry ever leave your device. There is no cloud sync, no online account, no external servers.
+PixelPusher runs entirely on your computer. No photos, metadata, or telemetry leave your device. There is no cloud sync, no online account, no external servers. The only network traffic is the optional "Buy Pro" link, which opens your default browser to the pricing page, and (in builds with `SENTRY_DSN` set) anonymous crash reports.
 
 ## Pricing
 
-- **Free tier** — 500 files per scan, core organize features
-- **Pro** — unlimited files, multi-source folders, duplicate detection, Sort by Type, undo, $12 one-time purchase
+- **Free tier** — up to **5,000 files per scan**, core organize features, perceptual-hash duplicate detection (first 25 groups)
+- **Pro** — unlimited files, DataHoarder mode (PDFs/docs/audio/design/3D), unlimited dupe groups, AI search, auto-cluster, watch folders, $12 **one-time purchase** (no subscription, all future updates included)
 
 ## Known Issues
 
-- Code signing not yet in place — Windows SmartScreen will warn on first install (see Installation notes above)
-- macOS and Linux builds coming in future releases
+- Code signing not yet in place — both Windows SmartScreen and macOS Gatekeeper will warn on first launch (see Installation notes above)
+- Linux builds coming in a future release
 - Very large libraries (100,000+ files) may take 30+ minutes on slower drives
 
 ## Roadmap
 
-- [ ] macOS support
+- [x] macOS support (Apple Silicon + Intel)
+- [x] DataHoarder mode (documents, audio, design, 3D)
+- [x] Byte-exact duplicate detection (DataHoarder)
+- [x] Dry-run preview tree before commit
 - [ ] Linux support (AppImage)
-- [ ] Code signing certificate
+- [ ] Code signing certificate + notarization
 - [ ] Face recognition grouping (opt-in, fully local)
 - [ ] Smart album suggestions
 - [ ] Folder watcher for auto-organizing new files
@@ -111,10 +140,12 @@ PixelPusher runs entirely on your computer. No photos, metadata, or telemetry ev
 ## Report Bugs
 
 Open an issue at [github.com/christhomas2131/pixelpusher/issues](https://github.com/christhomas2131/pixelpusher/issues) and include:
-- Your Windows version
-- PixelPusher version (Help > About)
+- Your OS and version (macOS 14.4, Windows 11, etc.)
+- PixelPusher version (PixelPusher → About on macOS / Help → About on Windows)
 - A description of what happened
-- The log file from `%USERPROFILE%\.photomove\logs\` (drag and drop onto the issue)
+- The log file:
+  - macOS / Linux: `~/.photomove/logs/pixelpusher.log`
+  - Windows: `%USERPROFILE%\.photomove\logs\pixelpusher.log`
 
 ## License
 

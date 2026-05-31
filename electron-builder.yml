@@ -21,6 +21,11 @@ win:
 mac:
   category: public.app-category.utilities
   icon: build/icon.icns
+  # Consistent artifact naming across both arches — without this, the Intel
+  # build came out as "PixelPusher-1.0.0.dmg" (no arch suffix) while the
+  # arm64 build was "PixelPusher-1.0.0-arm64.dmg". electron-updater routes
+  # updates by artifact name, and the asymmetry breaks auto-update on Intel.
+  artifactName: ${productName}-${version}-${arch}.${ext}
   # Per-arch builds (separate Apple Silicon + Intel .dmg) instead of a fused
   # universal binary. Universal builds via @electron/universal v2 currently
   # break on this codebase: it concatenates every file that differs between

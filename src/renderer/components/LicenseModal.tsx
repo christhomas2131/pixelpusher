@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { LicenseInfo } from '../../shared/types';
 import { PURCHASE_URL, PRICE_LABEL, PRICING_TAGLINE, type ProFeature } from '../../shared/pro-features';
 
@@ -27,7 +27,20 @@ export function LicenseModal({ license, onClose, onActivated, prompt }: Props) {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
 
+  // a11y: ESC-to-close + initial focus + click-outside-to-dismiss.
+  // role/aria attributes below let screen readers announce as a modal.
+  const firstFocusRef = useRef<HTMLInputElement | HTMLButtonElement | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    // Move focus into the modal on mount so keyboard users land somewhere
+    // sensible instead of the body.
+    queueMicrotask(() => firstFocusRef.current?.focus());
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   const handleActivate = async () => {
+    if (busy) return; // guard against double-submit
     if (!key.trim() || !email.trim()) { setError('Enter your license key and email.'); return; }
     setBusy(true);
     setError('');
@@ -54,10 +67,16 @@ export function LicenseModal({ license, onClose, onActivated, prompt }: Props) {
 
   return (
     <div style={styles.overlay} onClick={onClose}>
-      <div style={styles.modal} onClick={e => e.stopPropagation()}>
+      <div
+        style={styles.modal}
+        onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="license-modal-title"
+      >
         <div style={styles.header}>
-          <div style={styles.title}>License</div>
-          <button onClick={onClose} style={styles.closeBtn}>✕</button>
+          <div id="license-modal-title" style={styles.title}>License</div>
+          <button onClick={onClose} style={styles.closeBtn} aria-label="Close">✕</button>
         </div>
 
         {success ? (
@@ -111,8 +130,10 @@ export function LicenseModal({ license, onClose, onActivated, prompt }: Props) {
 
             <div style={styles.hint}>Already bought? Enter your key:</div>
             <input
+              ref={el => { if (el && !firstFocusRef.current) firstFocusRef.current = el; }}
               style={styles.input}
               placeholder="PXLP-XXXX-XXXX-XXXX-XXXX"
+              aria-label="License key"
               value={key}
               onChange={e => setKey(e.target.value.toUpperCase())}
               onKeyDown={e => e.key === 'Enter' && handleActivate()}
@@ -121,6 +142,7 @@ export function LicenseModal({ license, onClose, onActivated, prompt }: Props) {
             <input
               style={styles.input}
               placeholder="your@email.com"
+              aria-label="Email"
               type="email"
               value={email}
               onChange={e => setEmail(e.target.value)}

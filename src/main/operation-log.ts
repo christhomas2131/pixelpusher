@@ -41,6 +41,9 @@ export class OperationLog {
     this.logPath = path.join(OPERATIONS_DIR, `${sessionId}.jsonl`);
     this.metaPath = path.join(OPERATIONS_DIR, `${sessionId}.meta.json`);
     this.stream = fs.createWriteStream(this.logPath, { flags: 'a' });
+    // Defensive error listener — if the underlying FD dies (disk full, perm
+    // change), we don't want the unhandled 'error' to crash the organize.
+    this.stream.on('error', () => { /* fail-soft; further writes become no-ops */ });
   }
 
   write(entry: LogEntry): void {

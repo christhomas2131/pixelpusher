@@ -39,6 +39,11 @@ export const PRO_FEATURES = [
 export type ProFeature = (typeof PRO_FEATURES)[number];
 
 export function requiresPro(feature: ProFeature, tier: Tier): boolean {
+  // Defense against typos in callers — passing an unknown feature would
+  // silently return `tier === 'free'` and gate things accidentally.
+  if (!(PRO_FEATURES as readonly string[]).includes(feature)) {
+    throw new Error(`Unknown Pro feature: ${feature}. Add to PRO_FEATURES in pro-features.ts.`);
+  }
   return tier === 'free';
 }
 

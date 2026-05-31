@@ -71,10 +71,13 @@ describe('mac-dock', () => {
       expect(setProgressBar).toHaveBeenCalledWith(0);
     });
 
-    it('uses indeterminate (>1) when total <= 0', () => {
+    it('clears the bar when total <= 0', () => {
+      // macOS dock has no indeterminate state — values > 1 are clamped to
+      // "complete" (full bar), which is misleading when there's no work
+      // measured yet. Clear instead.
       const { win, setProgressBar } = makeWin();
       setDockProgress(win, 0, 0);
-      expect(setProgressBar).toHaveBeenCalledWith(2);
+      expect(setProgressBar).toHaveBeenCalledWith(-1);
     });
 
     it('is a no-op on non-darwin', () => {

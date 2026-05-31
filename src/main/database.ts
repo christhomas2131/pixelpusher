@@ -48,11 +48,23 @@ function openDb(dbPath: string): Database.Database {
     runMigrations(instance, undefined, logger);
     return instance;
   } catch (err: any) {
-    // Attempt to back up the corrupt file and start fresh
+    // Attempt to back up the corrupt file and start fresh. We log loudly
+    // (logger + console + a sentinel file) so the user can find the backup
+    // — auto-recovery without a breadcrumb made data loss easy to miss.
     if (fs.existsSync(dbPath)) {
       const corruptPath = dbPath + `.corrupt.${Date.now()}`;
       try { fs.renameSync(dbPath, corruptPath); } catch {}
-      console.error(`[database] Corrupt DB backed up to ${corruptPath}, creating fresh.`);
+      const msg = `Corrupt DB detected at ${dbPath}. Backed up to ${corruptPath}. A fresh database has been created — your original files are NOT affected, but scan history is lost.`;
+      console.error(`[database] ${msg}`);
+      try {
+        logger.error('database', msg, String(err?.message ?? err));
+        // Drop a marker the next startup can surface to the user.
+        fs.writeFileSync(
+          path.join(DB_DIR, 'last-corruption.txt'),
+          `${new Date().toISOString()}\n${msg}\n`,
+          'utf8',
+        );
+      } catch { /* best-effort */ }
     }
     const fresh = new Database(dbPath);
     applyPragmas(fresh);
@@ -119,11 +131,33 @@ export function insertFilesBatch(files: Omit<FileRecord, 'created_at'>[]): void 
   insertMany(files);
 }
 
+// Hard cap on page-number to keep OFFSET cheap. The indexes added in
+// migration 1 (idx_files_session_status, idx_files_session_id,
+// idx_files_date) make OFFSET fast up to a few thousand rows, but jumping
+// to page 10,000 would scan-and-discard millions of index entries.
+// CLAUDE.md: "Never use OFFSET pagination on large tables (use keyset)."
+// The renderer never exposes a "jump to page" UI — only prev/next — so
+// realistic page numbers stay under 100. We cap an order of magnitude
+// higher than that and throw on overshoot so a buggy renderer can't tank
+// the main process.
+const MAX_PAGE = 1000;
+
+// Escape a user-supplied search term for use in `LIKE … ESCAPE '\'`. Without
+// this, '_' acts as a single-char wildcard and '%' as a multi-char wildcard,
+// which over-matches when a user pastes a path containing those chars.
+function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, ch => '\\' + ch);
+}
+
 export function getFilesPaginated(request: GetFilesPageRequest): GetFilesPageResponse {
   const db = getDb();
   const { sessionId, page, pageSize, sortBy, sortDir, filters } = request;
   const safeSortCol = ALLOWED_SORT_COLS.has(sortBy) ? sortBy : 'created_at';
   const safeSortDir = sortDir === 'desc' ? 'DESC' : 'ASC';
+
+  if (page > MAX_PAGE) {
+    throw new Error(`Page ${page} exceeds MAX_PAGE=${MAX_PAGE}. Use filters to narrow the result set.`);
+  }
 
   const conditions: string[] = ['scan_session_id = @sessionId'];
   const params: Record<string, unknown> = { sessionId };
@@ -137,17 +171,19 @@ export function getFilesPaginated(request: GetFilesPageRequest): GetFilesPageRes
     params.category = filters.category;
   }
   if (filters?.search) {
-    conditions.push('(filename LIKE @search OR source_path LIKE @search)');
-    params.search = `%${filters.search}%`;
+    conditions.push("(filename LIKE @search ESCAPE '\\' OR source_path LIKE @search ESCAPE '\\')");
+    params.search = `%${escapeLike(filters.search)}%`;
   }
 
   const where = conditions.join(' AND ');
   const offset = (page - 1) * pageSize;
 
   const totalCount = (db.prepare(`SELECT COUNT(*) as n FROM files WHERE ${where}`).get(params) as { n: number }).n;
+  // Stable secondary sort by id keeps page boundaries deterministic when the
+  // primary sort column has ties (e.g. many files at the same date_taken).
   const files = db.prepare(`
     SELECT * FROM files WHERE ${where}
-    ORDER BY ${safeSortCol} ${safeSortDir}
+    ORDER BY ${safeSortCol} ${safeSortDir}, id ASC
     LIMIT @limit OFFSET @offset
   `).all({ ...params, limit: pageSize, offset }) as FileRecord[];
 
@@ -240,6 +276,11 @@ export interface DupeGroupRow {
   rank: number;
 }
 
+// Cap members fetched per group. Visually reviewing 50 dupes side-by-side is
+// already absurd; one group with 5000 members would otherwise balloon the IPC
+// response and stall the renderer.
+const MAX_MEMBERS_PER_GROUP = 50;
+
 export function getDupeGroupsPaginated(
   sessionId: string,
   page: number,
@@ -259,17 +300,24 @@ export function getDupeGroupsPaginated(
   if (groupIds.length === 0) return { groups: [], total };
 
   const placeholders = groupIds.map(() => '?').join(',');
+  // ROW_NUMBER() OVER (PARTITION BY group_id ORDER BY rank) keeps the top-N
+  // members per group at SQL level — bounded response size regardless of
+  // how many files clustered together.
   const rows = db.prepare(`
-    SELECT g.id as group_id, g.scan_session_id, g.member_count, g.status,
-           m.file_id, m.is_keeper, m.rank,
-           f.filename, f.source_path, f.size, f.date_taken, f.camera_model,
-           f.width, f.height, f.format, f.file_category, f.date_source,
-           f.scan_session_id as file_session_id, f.source_label, f.source_index
-    FROM dupe_groups g
-    JOIN dupe_group_members m ON m.group_id = g.id
-    JOIN files f ON f.id = m.file_id
-    WHERE g.id IN (${placeholders})
-    ORDER BY g.id, m.rank
+    SELECT * FROM (
+      SELECT g.id as group_id, g.scan_session_id, g.member_count, g.status,
+             m.file_id, m.is_keeper, m.rank,
+             f.filename, f.source_path, f.size, f.date_taken, f.camera_model,
+             f.width, f.height, f.format, f.file_category, f.date_source,
+             f.scan_session_id as file_session_id, f.source_label, f.source_index,
+             ROW_NUMBER() OVER (PARTITION BY g.id ORDER BY m.rank) AS rn
+      FROM dupe_groups g
+      JOIN dupe_group_members m ON m.group_id = g.id
+      JOIN files f ON f.id = m.file_id
+      WHERE g.id IN (${placeholders})
+    )
+    WHERE rn <= ${MAX_MEMBERS_PER_GROUP}
+    ORDER BY group_id, rank
   `).all(...groupIds) as any[];
 
   // Reassemble into DupeGroup[]
@@ -337,11 +385,15 @@ export function resolveDupeGroup(
     db.prepare('UPDATE dupe_group_members SET is_keeper = CASE WHEN file_id = ? THEN 1 ELSE 0 END WHERE group_id = ?')
       .run(keeperId, groupId);
 
-    // Mark non-keepers according to action
+    // Mark non-keepers according to action. Encode the *destiny* in
+    // junk_reason so a later debug session can tell the difference between
+    // a file that was deleted from disk vs one that was moved to quarantine
+    // (source_path is stale either way, but they're different operations).
     if (action !== 'ignore') {
+      const reason = action === 'quarantine' ? 'duplicate_quarantined' : 'duplicate_deleted';
       db.prepare(
-        "UPDATE files SET status = 'junk', junk_reason = 'duplicate', junk_confidence = 'high' WHERE id IN (SELECT file_id FROM dupe_group_members WHERE group_id = ? AND file_id != ?)"
-      ).run(groupId, keeperId);
+        "UPDATE files SET status = 'junk', junk_reason = ?, junk_confidence = 'high' WHERE id IN (SELECT file_id FROM dupe_group_members WHERE group_id = ? AND file_id != ?)"
+      ).run(reason, groupId, keeperId);
     }
 
     // Resolve group
@@ -380,7 +432,13 @@ export function getFileCounts(sessionId: string): FileCounts {
   const junk     = (db.prepare("SELECT COUNT(*) as n FROM files WHERE scan_session_id = ? AND status = 'junk'").get(sessionId) as { n: number }).n;
 
   const catRows = db.prepare('SELECT file_category, COUNT(*) as n FROM files WHERE scan_session_id = ? GROUP BY file_category').all(sessionId) as { file_category: string; n: number }[];
-  const byCategory = { images: 0, videos: 0, raw: 0 } as Record<string, number>;
+  // Initialize every FileCategory key to 0 so DataHoarder categories
+  // (documents/audio/design/3d) don't return `undefined` and break
+  // arithmetic in the renderer (e.g. `counts.byCategory.documents + 1` → NaN).
+  const byCategory: Record<string, number> = {
+    images: 0, videos: 0, raw: 0,
+    documents: 0, audio: 0, design: 0, '3d': 0,
+  };
   for (const row of catRows) byCategory[row.file_category] = row.n;
 
   const dupes = getDupeGroupCount(sessionId);

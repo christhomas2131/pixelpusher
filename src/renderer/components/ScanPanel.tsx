@@ -3,6 +3,7 @@ import { ScanOptions, ScanDepth, ScanSpeed, ScanProgress } from '../../shared/ty
 import { type Mode } from '../../shared/mode';
 import { CollapsibleSection } from './CollapsibleSection';
 import { SOURCE_BADGE_COLORS } from '../../shared/constants';
+import { useAppContext } from '../context/AppContext';
 
 function detectOverlap(folders: string[]): string | null {
   const norm = folders.map(f => f.replace(/\\/g, '/').replace(/\/$/, ''));
@@ -28,6 +29,7 @@ interface Props {
 }
 
 export function ScanPanel({ mode, onScan, onCancel, scanning, done, progress, totalFiles }: Props) {
+  const { settings } = useAppContext();
   const [folders, setFolders] = useState<string[]>([]);
   const [depth, setDepth] = useState<ScanDepth>('quick');
   const [speed, setSpeed] = useState<ScanSpeed>('safe');
@@ -53,7 +55,17 @@ export function ScanPanel({ mode, onScan, onCancel, scanning, done, progress, to
 
   const handleScan = () => {
     if (folders.length === 0) return;
-    onScan({ sourceFolders: folders, scanDepth: depth, scanSpeed: speed, mode });
+    // Pass the user's `enabledFileCategories` setting through so a
+    // DataHoarder-mode scan doesn't silently revert to mode defaults if
+    // they've customized categories. (Previously this prop was never sent
+    // and main always fell back to `defaultCategoriesForMode(mode)`.)
+    onScan({
+      sourceFolders: folders,
+      scanDepth: depth,
+      scanSpeed: speed,
+      mode,
+      enabledCategories: settings?.enabledFileCategories,
+    });
   };
 
   const sourceSummary = folders.length === 0

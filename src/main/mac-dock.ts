@@ -7,7 +7,10 @@ const onMac = () => process.platform === 'darwin';
 export function setDockProgress(win: BrowserWindow | null, processed: number, total: number): void {
   if (!onMac() || !win || win.isDestroyed()) return;
   if (total <= 0) {
-    win.setProgressBar(2); // indeterminate
+    // macOS has no indeterminate dock progress; -1 clears the bar (no value > 1
+    // sentinel like on Windows). Previous code passed 2, which macOS treats
+    // as "complete" (>1 saturates to full).
+    win.setProgressBar(-1);
     return;
   }
   const v = Math.max(0, Math.min(1, processed / total));

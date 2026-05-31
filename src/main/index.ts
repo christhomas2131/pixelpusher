@@ -80,6 +80,11 @@ function createWindow(): void {
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     logger.fatal('crash', `Renderer crashed: ${details.reason}`);
     if (details.reason === 'crashed' || details.reason === 'oom') {
+      // Force the old window down before recreating — otherwise the early
+      // `mainWindow && !mainWindow.isDestroyed()` guard in createWindow()
+      // short-circuits and the user is stuck staring at a dead renderer.
+      try { mainWindow?.destroy(); } catch { /* best-effort */ }
+      mainWindow = null;
       createWindow();
     }
   });
@@ -105,6 +110,9 @@ process.on('unhandledRejection', (reason) => {
   const err = reason instanceof Error ? reason : new Error(String(reason));
   logger.logFatal('crash', `Unhandled rejection: ${err.message}`, err);
   logger.flushSync();
+  // Symmetric with uncaughtException: exit so the process can't drift into
+  // a half-broken state that's harder to debug than a hard fail.
+  setTimeout(() => process.exit(1), 500);
 });
 
 app.on('second-instance', () => {
@@ -122,20 +130,37 @@ app.on('activate', () => {
   if (!getWindow()) createWindow();
 });
 
-app.on('before-quit', async () => {
-  stopMemoryWatchdog();
-  await closeExiftool();
-  closeDb();
-  const mem = process.memoryUsage();
-  logger.info('app', `Graceful shutdown  heap=${Math.round(mem.heapUsed/1024/1024)}MB rss=${Math.round(mem.rss/1024/1024)}MB`);
-  logger.flushSync();
+// Electron's `before-quit` does NOT await async handlers — the process can
+// exit before closeExiftool/closeDb resolve, leaving zombie workers and a
+// non-truncated WAL. Defer the quit, run async teardown, then re-quit.
+let _shutdownStarted = false;
+app.on('before-quit', (event) => {
+  if (_shutdownStarted) return; // second emit (from app.quit() below)
+  _shutdownStarted = true;
+  event.preventDefault();
+  (async () => {
+    try {
+      stopMemoryWatchdog();
+      await closeExiftool();
+      closeDb();
+      const mem = process.memoryUsage();
+      logger.info('app', `Graceful shutdown  heap=${Math.round(mem.heapUsed/1024/1024)}MB rss=${Math.round(mem.rss/1024/1024)}MB`);
+      logger.flushSync();
+    } catch (err) {
+      logger.warn('app', 'Shutdown error (continuing)', String(err));
+    } finally {
+      app.quit();
+    }
+  })();
 });
 
 app.on('will-quit', () => {
-  // will-quit fires after all windows closed, just before process exits
   logger.info('app', `Process exiting cleanly  PID=${process.pid}`);
   logger.flushSync();
 });
+
+let _heartbeatInterval: NodeJS.Timeout | null = null;
+let _checkpointInterval: NodeJS.Timeout | null = null;
 
 app.whenReady().then(() => {
   logger.logStartup(app.getVersion());
@@ -149,14 +174,18 @@ app.whenReady().then(() => {
     }
   }
 
-  // License status — log to file and console
+  // License status — log to file and console (tier is the source of truth;
+  // status==='valid' could be a free trial in future, so prefer the
+  // explicit tier field).
   const _licInfo = getLicenseInfo();
-  const _licSummary = `status=${_licInfo.status} pro=${_licInfo.status === 'valid'} dev=${_licInfo.developer ?? false} packaged=${app.isPackaged}`;
+  const _isPro = _licInfo.tier === 'pro';
+  const _licSummary = `status=${_licInfo.status} tier=${_licInfo.tier} pro=${_isPro} dev=${_licInfo.developer ?? false} packaged=${app.isPackaged}`;
   logger.info('license', _licSummary);
   console.log('[LICENSE]', {
     key: _licInfo.key?.slice(0, 14) ?? 'none',
     status: _licInfo.status,
-    isPro: _licInfo.status === 'valid',
+    tier: _licInfo.tier,
+    isPro: _isPro,
     developer: _licInfo.developer ?? false,
     isPackaged: app.isPackaged,
   });
@@ -166,11 +195,18 @@ app.whenReady().then(() => {
   startMemoryWatchdog();
   initAutoUpdate(getWindow);
 
-  setInterval(() => {
+  _heartbeatInterval = setInterval(() => {
     const win = getWindow();
     if (win) win.webContents.send('heartbeat', Date.now());
   }, 5000);
 
   // WAL checkpoint every 60 seconds to keep DB file size manageable
-  setInterval(() => { checkpointDb(); }, 60_000);
+  _checkpointInterval = setInterval(() => { checkpointDb(); }, 60_000);
+});
+
+app.on('will-quit', () => {
+  // will-quit fires after the deferred async teardown above. Clean up the
+  // intervals so they don't keep refs to the (destroyed) window.
+  if (_heartbeatInterval)  { clearInterval(_heartbeatInterval);  _heartbeatInterval  = null; }
+  if (_checkpointInterval) { clearInterval(_checkpointInterval); _checkpointInterval = null; }
 });

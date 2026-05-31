@@ -24,7 +24,11 @@ class Logger {
       if (this.stream) this.stream.end();
       const stat = fs.existsSync(LOG_FILE) ? fs.statSync(LOG_FILE) : null;
       this.currentSize = stat ? stat.size : 0;
-      this.stream = fs.createWriteStream(LOG_FILE, { flags: 'a' });
+      const s = fs.createWriteStream(LOG_FILE, { flags: 'a' });
+      // Attach error listener so a disk-full / permission-denied stream error
+      // doesn't crash the whole process via uncaught 'error' emit.
+      s.on('error', () => { this.stream = null; });
+      this.stream = s;
     } catch {
       this.stream = null;
     }

@@ -185,10 +185,13 @@ describe('detectJunk — DataHoarder categories', () => {
     expect(r.reason).toBe('junk_directory');
   });
 
-  it('does NOT apply doc rules to images (backwards-compat)', () => {
-    // ~$something.jpg isn't a real Office lock; in photos mode it's just a small file
+  it('flags ~$ Office locks even in images mode', () => {
+    // ~$something.jpg is unusual but if it shows up in a photos scan it's
+    // still a temp file we want gone. The office-lock pattern fires before
+    // the size-based "tiny_file" rule because it's a higher-confidence
+    // signal than "small image".
     const r = detectJunk('/photos/~$weird.jpg', 30_000, 'images');
     expect(r.isJunk).toBe(true);
-    expect(r.reason).toBe('tiny_file'); // not 'office_lock'
+    expect(r.reason).toBe('office_lock');
   });
 });

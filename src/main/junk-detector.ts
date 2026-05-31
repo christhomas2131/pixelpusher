@@ -72,6 +72,13 @@ export function detectJunk(filePath: string, size: number, category?: FileCatego
       return { isJunk: true, reason: 'system_file', confidence: 'high' };
     }
   }
+  // Universal locks / temp / partial-download patterns — these are junk
+  // regardless of category, so check before the photo/non-photo split.
+  for (const { pattern, reason } of DATAHOARDER_FILENAME_PATTERNS) {
+    if (pattern.test(filename)) {
+      return { isJunk: true, reason, confidence: 'high' };
+    }
+  }
 
   const isPhotoLike = !category || PHOTO_CATEGORIES.has(category);
 
@@ -88,12 +95,9 @@ export function detectJunk(filePath: string, size: number, category?: FileCatego
     return { isJunk: false, reason: null, confidence: null };
   }
 
-  // DataHoarder categories (documents, audio, design, 3d): different patterns.
-  for (const { pattern, reason } of DATAHOARDER_FILENAME_PATTERNS) {
-    if (pattern.test(filename)) {
-      return { isJunk: true, reason, confidence: 'high' };
-    }
-  }
+  // DataHoarder categories (documents, audio, design, 3d).
+  // Office-lock / macOS-metadata / temp / partial-download patterns are
+  // now checked universally above this block — no need to repeat here.
   // Genuinely empty/broken files only — don't flag legitimately small docs.
   if (size < DOC_JUNK_SIZE_THRESHOLD) {
     return { isJunk: true, reason: 'empty_file', confidence: 'high' };

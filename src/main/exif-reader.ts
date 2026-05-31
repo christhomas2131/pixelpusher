@@ -1,5 +1,4 @@
 import { ExifTool, Tags } from 'exiftool-vendored';
-import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { logger } from './logger';
@@ -8,26 +7,43 @@ import type { Mode } from '../shared/mode';
 import { findSidecarForFile, parseTakeoutSidecar, extractDateFromSidecar } from './takeout-detector';
 
 let _exiftool: ExifTool | null = null;
+// Sticky death flag: once an ExifTool worker dies mid-scan we DO NOT
+// re-instantiate the singleton (CLAUDE.md: "Never restart ExifTool mid-scan"
+// — the no-zombie-perl rule). Subsequent readFileMeta calls in this scan
+// fall back to filename/filesystem date sources. closeExiftool() resets
+// both fields so the next scan starts fresh.
+let _exiftoolDead = false;
+
+class ExiftoolDeadError extends Error {
+  constructor() { super('ExifTool worker died earlier in this scan'); }
+}
 
 function getExiftool(maxProcs = 1): ExifTool {
+  if (_exiftoolDead) throw new ExiftoolDeadError();
   if (!_exiftool) {
     _exiftool = new ExifTool({ maxProcs, taskTimeoutMillis: 10_000 });
   }
   return _exiftool;
 }
 
+export function isExiftoolDead(): boolean {
+  return _exiftoolDead;
+}
+
 export async function closeExiftool(): Promise<void> {
   const et = _exiftool;
   _exiftool = null; // null FIRST to prevent races
+  _exiftoolDead = false; // next scan gets a fresh singleton
   if (et) {
     try {
       await et.end();
     } catch (err) {
       logger.warn('exif', 'Error ending ExifTool', String(err));
     }
-    if (process.platform === 'win32') {
-      try { execSync('taskkill /F /IM perl.exe /T', { stdio: 'ignore' }); } catch {}
-    }
+    // NOTE: previous versions ran `taskkill /F /IM perl.exe /T` on Windows
+    // here. Removed — it killed every perl process on the machine, not just
+    // ExifTool's. Workers should exit cleanly via end(); if they don't, the
+    // OS will reap orphans on process exit.
     await new Promise(r => setTimeout(r, 500));
   }
 }
@@ -55,21 +71,25 @@ export async function readFileMeta(
   maxProcs = 1,
   mode: Mode = 'photos'
 ): Promise<ExifResult> {
-  const tool = getExiftool(maxProcs);
   const args = scanDepth === 'quick' ? ['-fast2'] : [];
 
   let tags: Tags | null = null;
   try {
+    const tool = getExiftool(maxProcs);
     tags = await tool.read(file.source_path, { readArgs: args });
   } catch (err: unknown) {
-    const msg = String(err);
-    // If workers all died, reset singleton so next call gets a fresh instance
-    if (msg.includes('worker') || msg.includes('exiftool') || msg.includes('ended')) {
-      logger.warn('exif', 'ExifTool worker died, resetting singleton', msg);
-      _exiftool = null;
-      await new Promise(r => setTimeout(r, 1000));
+    if (err instanceof ExiftoolDeadError) {
+      // Singleton is dead for the rest of this scan — fall through to
+      // filename/filesystem date extraction without retrying ExifTool.
     } else {
-      logger.warn('exif', `Read failed: ${file.source_path}`, msg);
+      const msg = String(err);
+      // Worker died for the first time — set sticky flag, do NOT recreate.
+      if (msg.includes('worker') || msg.includes('exiftool') || msg.includes('ended')) {
+        logger.warn('exif', 'ExifTool worker died — disabling for rest of scan', msg);
+        _exiftoolDead = true;
+      } else {
+        logger.warn('exif', `Read failed: ${file.source_path}`, msg);
+      }
     }
   }
 
@@ -100,27 +120,24 @@ export async function readFileMeta(
     // for the document's source. Author goes to camera_make so the existing
     // {CAMERA} pattern token shows it; Creator/Producer goes to camera_model
     // (e.g. "Microsoft Word", "Adobe Acrobat", "Pages").
-    const author = (tags as Record<string, unknown>).Author;
-    const creator = (tags as Record<string, unknown>).Creator
-      ?? (tags as Record<string, unknown>).Producer
-      ?? (tags as Record<string, unknown>).CreatorTool
-      ?? (tags as Record<string, unknown>).Application;
-    if (typeof author === 'string' && author.trim()) {
-      result.camera_make = author.trim();
-    }
-    if (typeof creator === 'string' && creator.trim()) {
-      result.camera_model = creator.trim();
-    }
+    const t = tags as Record<string, unknown>;
+    const author = coerceMetaString(t.Author);
+    const creator = coerceMetaString(t.Creator)
+      ?? coerceMetaString(t.Producer)
+      ?? coerceMetaString(t.CreatorTool)
+      ?? coerceMetaString(t.Application);
+    if (author) result.camera_make = author;
+    if (creator) result.camera_model = creator;
     // Capture the doc title (and a few cousins) for later use in clustering
     // and search. JSON keeps the column flexible without a schema migration.
     const extras: Record<string, unknown> = {};
-    const title = (tags as Record<string, unknown>).Title;
-    const subject = (tags as Record<string, unknown>).Subject;
-    const keywords = (tags as Record<string, unknown>).Keywords;
-    const pageCount = (tags as Record<string, unknown>).PageCount;
-    if (typeof title === 'string' && title.trim()) extras.title = title.trim();
-    if (typeof subject === 'string' && subject.trim()) extras.subject = subject.trim();
-    if (typeof keywords === 'string' && keywords.trim()) extras.keywords = keywords.trim();
+    const title    = coerceMetaString(t.Title);
+    const subject  = coerceMetaString(t.Subject);
+    const keywords = coerceMetaString(t.Keywords);
+    const pageCount = t.PageCount;
+    if (title)    extras.title    = title;
+    if (subject)  extras.subject  = subject;
+    if (keywords) extras.keywords = keywords;
     if (typeof pageCount === 'number') extras.pageCount = pageCount;
     if (Object.keys(extras).length > 0) {
       result.extended_meta = JSON.stringify(extras);
@@ -206,17 +223,39 @@ function extractDate(
   return { date: null, source: 'unknown' };
 }
 
+// Coerce an EXIF tag value to a clean string. Handles arrays (multi-author PDFs
+// return Author as ['A','B','C']) and caps the length so a 10MB doc title
+// can't bloat the row.
+const META_MAX_CHARS = 256;
+function coerceMetaString(val: unknown): string | null {
+  if (val == null) return null;
+  if (Array.isArray(val)) {
+    const joined = val.filter(v => v != null).map(v => String(v).trim()).filter(Boolean).join(', ');
+    return joined ? joined.slice(0, META_MAX_CHARS) : null;
+  }
+  if (typeof val === 'string') {
+    const t = val.trim();
+    return t ? t.slice(0, META_MAX_CHARS) : null;
+  }
+  if (typeof val === 'number' || typeof val === 'boolean') {
+    return String(val).slice(0, META_MAX_CHARS);
+  }
+  return null;
+}
+
 function exifValToISO(val: unknown): string | null {
   if (!val) return null;
   if (typeof val === 'object' && 'toDate' in (val as object)) {
     try {
       const d = (val as { toDate: () => Date }).toDate();
-      if (!isNaN(d.getTime()) && d.getFullYear() > 1970) return d.toISOString();
+      // Allow pre-1970 dates (film scans, archival photos) — previous >1970
+      // threshold excluded legitimate captures. 1900 is a safer floor.
+      if (!isNaN(d.getTime()) && d.getFullYear() >= 1900) return d.toISOString();
     } catch {}
   }
   if (typeof val === 'string') {
     const d = new Date(val);
-    if (!isNaN(d.getTime()) && d.getFullYear() > 1970) return d.toISOString();
+    if (!isNaN(d.getTime()) && d.getFullYear() >= 1900) return d.toISOString();
   }
   return null;
 }
@@ -258,6 +297,6 @@ function parseDateFromFilename(filename: string): string | null {
 }
 
 function makeDate(y: number, mo: number, d: number): Date | null {
-  if (y < 1970 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  if (y < 1900 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
   return new Date(y, mo - 1, d);
 }

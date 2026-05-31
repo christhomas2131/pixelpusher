@@ -282,6 +282,10 @@ export interface ElectronAPI {
   getPictures: () => Promise<string>;
   openLogFolder: () => Promise<void>;
   openPath: (p: string) => Promise<void>;
+  // Returns a base64 data:image/jpeg URL or null on failure. Main downsamples
+  // via sharp so the renderer can show large originals without violating CSP
+  // (img-src disallows file://) or shipping multi-MB blobs over IPC.
+  getThumbnail: (filePath: string, maxSize?: number) => Promise<string | null>;
   onHeartbeat: (cb: (ts: number) => void) => () => void;
   onThemeChanged: (cb: (theme: Theme) => void) => () => void;
   onNewSession: (cb: () => void) => () => void;

@@ -1,4 +1,4 @@
-import fs from 'fs';
+import fsp from 'fs/promises';
 import path from 'path';
 import { getFilesForOrganize } from './database';
 import { buildFullDestination } from './file-mover';
@@ -9,6 +9,14 @@ export const MAX_TREE_NODES = 5000;
 const BATCH = 500;
 // Limit existence checks so a 50 K-file dry run doesn't pound the FS.
 const EXISTENCE_CHECK_BUDGET = 2000;
+
+interface TreeRoot {
+  root: MutNode;
+  // Running node count. Maintained in O(1) per insert so addToTree doesn't
+  // walk the whole tree on every call (previous version was O(N) per insert,
+  // O(N²) cumulative — observed pathologically slow on 40K-file dry runs).
+  nodeCount: number;
+}
 
 interface MutNode {
   name: string;
@@ -26,7 +34,11 @@ function newNode(name: string): MutNode {
   return { name, count: 0, bytes: 0, internalCollisions: 0, children: new Map() };
 }
 
-function addToTree(root: MutNode, destPath: string, bytes: number, filename: string): { collision: boolean } {
+function newRoot(): TreeRoot {
+  return { root: newNode(''), nodeCount: 1 };
+}
+
+function addToTree(tr: TreeRoot, destPath: string, bytes: number, filename: string): { collision: boolean } {
   // Walk path segments, creating nodes as we go. The leaf node is the directory
   // immediately containing the file — the filename itself is recorded on that
   // node's `filenames` map for collision detection.
@@ -35,22 +47,21 @@ function addToTree(root: MutNode, destPath: string, bytes: number, filename: str
   const dir = idx === -1 ? '' : norm.slice(0, idx);
   const parts = dir.split('/').filter(Boolean);
 
-  let node = root;
+  let node = tr.root;
   node.count++;
   node.bytes += bytes;
 
   for (const part of parts) {
     let child = node.children.get(part);
     if (!child) {
-      if (countNodes(root) >= MAX_TREE_NODES) {
+      if (tr.nodeCount >= MAX_TREE_NODES) {
         // Stop branching once the cap is reached. Files still count at the
         // truncation point so totals stay accurate.
-        node.count++;
-        node.bytes += bytes;
         return { collision: false };
       }
       child = newNode(part);
       node.children.set(part, child);
+      tr.nodeCount++;
     }
     node = child;
     node.count++;
@@ -65,12 +76,6 @@ function addToTree(root: MutNode, destPath: string, bytes: number, filename: str
     return { collision: true };
   }
   return { collision: false };
-}
-
-function countNodes(root: MutNode): number {
-  let n = 1;
-  for (const child of root.children.values()) n += countNodes(child);
-  return n;
 }
 
 function freeze(node: MutNode): DryRunNode {
@@ -92,7 +97,7 @@ export async function dryRunOrganize(options: OrganizeOptions): Promise<DryRunRe
   // Streaming variant of summarizeMappings — interleaves DB fetches and FS
   // existence checks so we don't materialize the whole library in memory and
   // can yield to the event loop between batches.
-  const root = newNode('');
+  const tr = newRoot();
   const sample: DryRunSampleEntry[] = [];
   let totalFiles = 0;
   let totalBytes = 0;
@@ -106,19 +111,24 @@ export async function dryRunOrganize(options: OrganizeOptions): Promise<DryRunRe
     const batch = getFilesForOrganize(sessionId, lastId, BATCH);
     if (batch.length === 0) break;
 
+    // Collect existence-checks for the batch so we can run them in parallel
+    // instead of serially blocking on each fs call.
+    const checks: Array<Promise<void>> = [];
+
     for (const file of batch) {
       const dest = buildFullDestination(destination, pattern, file);
-      const { collision } = addToTree(root, dest, file.size || 0, path.basename(dest));
+      const { collision } = addToTree(tr, dest, file.size || 0, path.basename(dest));
       if (collision) internalCollisions++;
       if (!file.date_taken) unknownDate++;
 
       if (existenceChecksRemaining > 0) {
         existenceChecksRemaining--;
-        try {
-          if (fs.existsSync(dest)) existingConflicts++;
-        } catch {
-          // ignore — permission errors etc.
-        }
+        // fs.promises.access — non-blocking; resolves on existence, rejects
+        // otherwise. We don't care about the rejection (no-existence is the
+        // happy path), so swallow.
+        checks.push(
+          fsp.access(dest).then(() => { existingConflicts++; }, () => {})
+        );
       }
 
       if (sample.length < SAMPLE_SIZE) {
@@ -128,6 +138,8 @@ export async function dryRunOrganize(options: OrganizeOptions): Promise<DryRunRe
       totalBytes += file.size || 0;
     }
 
+    if (checks.length > 0) await Promise.all(checks);
+
     lastId = batch[batch.length - 1].id;
     await new Promise<void>((r) => setImmediate(r));
   }
@@ -135,11 +147,11 @@ export async function dryRunOrganize(options: OrganizeOptions): Promise<DryRunRe
   return {
     totalFiles,
     totalBytes,
-    uniqueFolders: countLeafFolders(root),
+    uniqueFolders: countLeafFolders(tr.root),
     unknownDate,
     internalCollisions,
     existingConflicts,
-    tree: freeze(root),
+    tree: freeze(tr.root),
     sample,
   };
 }
@@ -163,7 +175,7 @@ export interface DryRunMapping {
 }
 
 export function summarizeMappings(mappings: Iterable<DryRunMapping>): Omit<DryRunResult, 'existingConflicts'> {
-  const root = newNode('');
+  const tr = newRoot();
   const sample: DryRunSampleEntry[] = [];
   let totalFiles = 0;
   let totalBytes = 0;
@@ -171,7 +183,7 @@ export function summarizeMappings(mappings: Iterable<DryRunMapping>): Omit<DryRu
   let internalCollisions = 0;
 
   for (const m of mappings) {
-    const { collision } = addToTree(root, m.dest, m.size, path.basename(m.dest));
+    const { collision } = addToTree(tr, m.dest, m.size, path.basename(m.dest));
     if (collision) internalCollisions++;
     if (!m.hasDate) unknownDate++;
     if (sample.length < SAMPLE_SIZE) sample.push({ source: m.source, dest: m.dest });
@@ -182,10 +194,10 @@ export function summarizeMappings(mappings: Iterable<DryRunMapping>): Omit<DryRu
   return {
     totalFiles,
     totalBytes,
-    uniqueFolders: countLeafFolders(root),
+    uniqueFolders: countLeafFolders(tr.root),
     unknownDate,
     internalCollisions,
-    tree: freeze(root),
+    tree: freeze(tr.root),
     sample,
   };
 }

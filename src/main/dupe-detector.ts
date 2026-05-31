@@ -95,22 +95,26 @@ export async function detectDuplicates(
     clusters.get(root)!.push(row.id);
   }
 
-  // Clear stale groups for this session
-  db.prepare(
-    'DELETE FROM dupe_group_members WHERE group_id IN (SELECT id FROM dupe_groups WHERE scan_session_id = ?)'
-  ).run(sessionId);
-  db.prepare('DELETE FROM dupe_groups WHERE scan_session_id = ?').run(sessionId);
-
   const insertGroup  = db.prepare(
     "INSERT INTO dupe_groups (id, scan_session_id, member_count, status) VALUES (?, ?, ?, 'pending')"
   );
   const insertMember = db.prepare(
     'INSERT INTO dupe_group_members (group_id, file_id, is_keeper, rank) VALUES (?, ?, ?, ?)'
   );
+  const deleteOldMembers = db.prepare(
+    'DELETE FROM dupe_group_members WHERE group_id IN (SELECT id FROM dupe_groups WHERE scan_session_id = ?)'
+  );
+  const deleteOldGroups = db.prepare('DELETE FROM dupe_groups WHERE scan_session_id = ?');
 
   const rowMap = new Map<string, HashRow>(rows.map(r => [r.id, r]));
 
+  // Atomic clear-and-rebuild: previous version ran the DELETEs outside the
+  // transaction, so a process crash between DELETE and INSERT would leave
+  // the user with zero dupe groups despite a successful hash run.
   const groupCount = db.transaction(() => {
+    deleteOldMembers.run(sessionId);
+    deleteOldGroups.run(sessionId);
+
     let count = 0;
     for (const [, members] of clusters) {
       if (members.length < 2) continue;
@@ -182,19 +186,26 @@ export function groupByByteHash(rows: ByteHashRow[]): ByteHashRow[][] {
 export async function detectByteHashDuplicates(sessionId: string): Promise<number> {
   const db = getDb();
 
+  // SQL pre-filter: only fetch rows whose byte_hash actually has duplicates.
+  // Previous version pulled every hashed file into memory (~20 MB for 100K
+  // DataHoarder files) and grouped in JS. With this query, an attic with
+  // 100K unique-hash files yields zero rows — bounded memory regardless of
+  // library size.
   const rows = db.prepare(
     `SELECT id, source_path, filename, size, byte_hash FROM files
-     WHERE scan_session_id = ? AND byte_hash IS NOT NULL AND status = 'ready'`
-  ).all(sessionId) as ByteHashRow[];
+     WHERE scan_session_id = ?
+       AND byte_hash IS NOT NULL
+       AND status = 'ready'
+       AND byte_hash IN (
+         SELECT byte_hash FROM files
+         WHERE scan_session_id = ? AND byte_hash IS NOT NULL AND status = 'ready'
+         GROUP BY byte_hash HAVING COUNT(*) > 1
+       )
+     ORDER BY byte_hash`
+  ).all(sessionId, sessionId) as ByteHashRow[];
 
   const groups = groupByByteHash(rows);
   if (groups.length === 0) return 0;
-
-  // Clear any stale groups for this session before inserting new ones.
-  db.prepare(
-    'DELETE FROM dupe_group_members WHERE group_id IN (SELECT id FROM dupe_groups WHERE scan_session_id = ?)'
-  ).run(sessionId);
-  db.prepare('DELETE FROM dupe_groups WHERE scan_session_id = ?').run(sessionId);
 
   const insertGroup = db.prepare(
     "INSERT INTO dupe_groups (id, scan_session_id, member_count, status) VALUES (?, ?, ?, 'pending')"
@@ -202,8 +213,16 @@ export async function detectByteHashDuplicates(sessionId: string): Promise<numbe
   const insertMember = db.prepare(
     'INSERT INTO dupe_group_members (group_id, file_id, is_keeper, rank) VALUES (?, ?, ?, ?)'
   );
+  const deleteOldMembers = db.prepare(
+    'DELETE FROM dupe_group_members WHERE group_id IN (SELECT id FROM dupe_groups WHERE scan_session_id = ?)'
+  );
+  const deleteOldGroups = db.prepare('DELETE FROM dupe_groups WHERE scan_session_id = ?');
 
+  // Atomic clear-and-rebuild (see detectDuplicates comment).
   const groupCount = db.transaction(() => {
+    deleteOldMembers.run(sessionId);
+    deleteOldGroups.run(sessionId);
+
     let count = 0;
     for (const members of groups) {
       const groupId = crypto.randomUUID();
