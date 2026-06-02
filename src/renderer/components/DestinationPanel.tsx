@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { FileCounts, OrganizeOptions, OperationMode, ConflictStrategy } from '../../shared/types';
 import { resolvePattern, getPatternTokens, PatternContext } from '../../shared/pattern';
+import { defaultPatternForMode, type Mode } from '../../shared/mode';
+import { useAppContext } from '../context/AppContext';
 
 interface Props {
   sessionId: string;
+  mode: Mode;
   counts: FileCounts | null;
-  onOrganize: (options: OrganizeOptions) => void;
+  onPreview: (options: OrganizeOptions) => void;
 }
 
 type OrgMode = 'date' | 'type';
@@ -19,29 +22,52 @@ const PRESETS: { label: string; pattern: string; mode: OrgMode }[] = [
   { label: 'By Type',      pattern: '{YYYY} {TYPE_LABEL}',    mode: 'type' },
 ];
 
-const PREVIEW_CTX: PatternContext = {
-  date: new Date('2024-03-15T12:00:00Z'),
-  cameraModel: 'iPhone 15 Pro',
-  category: 'images',
-  format: 'jpg',
-};
+// Pattern defaults per organize-mode, picked off the app mode so the
+// DataHoarder profile doesn't snap a user back to photo-style folders
+// every time they toggle Date/Type.
+function patternForOrgMode(orgMode: OrgMode, appMode: Mode): string {
+  if (orgMode === 'date') return defaultPatternForMode(appMode);
+  // Type-based default: surface the {TYPE_LABEL} prominently.
+  return appMode === 'datahoarder' ? '{TYPE_LABEL}/{YYYY}' : '{YYYY} {TYPE_LABEL}';
+}
 
-export function DestinationPanel({ sessionId, counts, onOrganize }: Props) {
+export function DestinationPanel({ sessionId, mode: appMode, counts, onPreview }: Props) {
+  const { settings, refreshSettings } = useAppContext();
   const [destination,      setDestination]      = useState('');
-  const [pattern,          setPattern]          = useState('{YYYY}/{MMM}');
+  const [pattern,          setPattern]          = useState(() => defaultPatternForMode(appMode));
   const [orgMode,          setOrgMode]          = useState<OrgMode>('date');
   const [mode,             setMode]             = useState<OperationMode>('copy');
   const [conflictStrategy, setConflictStrategy] = useState<ConflictStrategy>('rename');
 
   useEffect(() => {
-    window.electronAPI.getPictures().then(p => setDestination(d => d || p));
+    let cancelled = false;
+    window.electronAPI.getPictures().then(p => {
+      if (!cancelled) setDestination(d => d || p);
+    });
     window.electronAPI.getSettings().then(s => {
-      if (s.lastDestination) setDestination(s.lastDestination);
-      if (s.folderPattern)   setPattern(s.folderPattern);
+      if (cancelled) return;
+      // Use a functional setter so a destination the user typed in between
+      // the getPictures() and getSettings() resolves doesn't get clobbered.
+      if (s.lastDestination) setDestination(d => d || s.lastDestination);
+      // Pattern: stored value if set, otherwise the mode's default. This lets
+      // a user customize a pattern in DataHoarder mode without it leaking
+      // back to PixelPusher mode (and vice versa) when switching.
+      setPattern(s.folderPattern || defaultPatternForMode(appMode));
       setMode(s.operationMode);
       setConflictStrategy(s.conflictStrategy);
     });
-  }, []);
+    return () => { cancelled = true; };
+  }, [appMode]);
+
+  // Preview context derived from the actual app mode — DataHoarder previews
+  // should show "Documents" / "PDF", not "Photos" / "jpg".
+  const previewCtx: PatternContext = {
+    date: new Date('2024-03-15T12:00:00Z'),
+    cameraModel: appMode === 'datahoarder' ? 'Microsoft Word' : 'iPhone 15 Pro',
+    category: appMode === 'datahoarder' ? 'documents' : 'images',
+    format: appMode === 'datahoarder' ? 'pdf' : 'jpg',
+  };
+  const previewName = appMode === 'datahoarder' ? 'document.pdf' : 'photo.jpg';
 
   const browse = async () => {
     const p = await window.electronAPI.openFolderDialog();
@@ -54,28 +80,29 @@ export function DestinationPanel({ sessionId, counts, onOrganize }: Props) {
   };
 
   const preview = pattern
-    ? resolvePattern(pattern, PREVIEW_CTX) + '/photo.jpg'
-    : 'Unknown/photo.jpg';
+    ? resolvePattern(pattern, previewCtx) + `/${previewName}`
+    : `Unknown/${previewName}`;
 
   const readyCount = counts?.ready ?? 0;
 
-  const handleOrganize = () => {
+  const handlePreview = () => {
     if (!destination) return;
-    onOrganize({ sessionId, destination, pattern, mode, conflictStrategy });
-    window.electronAPI.saveSettings({
-      lastSourceFolders: [],
-      lastDestination: destination,
-      folderPattern: pattern,
-      operationMode: mode,
-      conflictStrategy,
-      scanDepth: 'quick',
-      scanSpeed: 'balanced',
-      theme: 'system',
-      enabledFileCategories: ['images', 'videos'],
-      recentFolders: [],
-      windowBounds: null,
-      leftPanelWidth: 280,
-    });
+    onPreview({ sessionId, destination, pattern, mode, conflictStrategy });
+    // Merge with current settings — previous version overwrote with hardcoded
+    // defaults (windowBounds: null, leftPanelWidth: 280, theme: 'system',
+    // enabledFileCategories: ['images','videos']…), nuking the user's prefs
+    // on every Preview click.
+    if (!settings) return;
+    window.electronAPI
+      .saveSettings({
+        ...settings,
+        lastDestination: destination,
+        folderPattern: pattern,
+        operationMode: mode,
+        conflictStrategy,
+      })
+      .then(() => refreshSettings())
+      .catch(() => { /* surfaced via app-wide error UI if it matters */ });
   };
 
   return (
@@ -83,13 +110,15 @@ export function DestinationPanel({ sessionId, counts, onOrganize }: Props) {
       <div style={styles.title}>Organize</div>
 
       {/* Destination */}
-      <label style={styles.label}>Destination</label>
+      <label style={styles.label} htmlFor="dest-input">Destination</label>
       <div style={styles.row}>
         <input
+          id="dest-input"
           style={{ ...styles.input, flex: 1, minWidth: 0 }}
           value={destination}
           onChange={e => setDestination(e.target.value)}
           placeholder="Select destination folder…"
+          aria-label="Destination folder"
         />
         <button className="btn-secondary" style={styles.browseBtn} onClick={browse}>
           Browse
@@ -106,8 +135,7 @@ export function DestinationPanel({ sessionId, counts, onOrganize }: Props) {
             style={styles.toggleBtn}
             onClick={() => {
               setOrgMode(m);
-              if (m === 'type') setPattern('{YYYY} {TYPE_LABEL}');
-              else setPattern('{YYYY}/{MMM}');
+              setPattern(patternForOrgMode(m, appMode));
             }}
           >
             {m === 'date' ? 'Date' : 'Type'}
@@ -131,12 +159,14 @@ export function DestinationPanel({ sessionId, counts, onOrganize }: Props) {
       </div>
 
       {/* Pattern input */}
-      <label style={styles.label}>Folder pattern</label>
+      <label style={styles.label} htmlFor="pattern-input">Folder pattern</label>
       <input
+        id="pattern-input"
         style={styles.input}
         value={pattern}
         onChange={e => setPattern(e.target.value)}
         placeholder="{YYYY}/{MMM}"
+        aria-label="Folder pattern"
       />
       <div style={styles.tokenRow}>
         {getPatternTokens().map(t => (
@@ -171,11 +201,13 @@ export function DestinationPanel({ sessionId, counts, onOrganize }: Props) {
       </div>
 
       {/* Conflict strategy */}
-      <label style={styles.label}>If file exists</label>
+      <label style={styles.label} htmlFor="conflict-select">If file exists</label>
       <select
+        id="conflict-select"
         style={styles.select}
         value={conflictStrategy}
         onChange={e => setConflictStrategy(e.target.value as ConflictStrategy)}
+        aria-label="Conflict strategy"
       >
         <option value="rename">Auto-rename</option>
         <option value="skip">Skip</option>
@@ -186,9 +218,9 @@ export function DestinationPanel({ sessionId, counts, onOrganize }: Props) {
         className="btn-primary"
         style={styles.organizeBtn}
         disabled={!destination || readyCount === 0}
-        onClick={handleOrganize}
+        onClick={handlePreview}
       >
-        Organize {readyCount.toLocaleString()} file{readyCount !== 1 ? 's' : ''}
+        Preview {readyCount.toLocaleString()} file{readyCount !== 1 ? 's' : ''}
       </button>
     </div>
   );

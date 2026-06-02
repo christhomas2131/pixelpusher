@@ -12,6 +12,7 @@ const api: ElectronAPI = {
 
   // ── Organize ─────────────────────────────────────────────────────────────────
   startOrganize:      (options)    => ipcRenderer.invoke('organize:start', options),
+  dryRunOrganize:     (options)    => ipcRenderer.invoke('organize:dryRun', options),
   cancelOrganize:     ()           => ipcRenderer.invoke('organize:cancel'),
   undoOrganize:       (sessionId)  => ipcRenderer.invoke('organize:undo', sessionId),
   getOrganizeHistory: ()           => ipcRenderer.invoke('organize:getHistory'),
@@ -41,6 +42,7 @@ const api: ElectronAPI = {
   getPictures:      ()           => ipcRenderer.invoke('dialog:getPictures'),
   openLogFolder:    ()           => ipcRenderer.invoke('shell:openLogFolder'),
   openPath:         (p)          => ipcRenderer.invoke('shell:openPath', p),
+  getThumbnail:     (p, size)    => ipcRenderer.invoke('image:getThumbnail', p, size),
 
   // ── Scan events ──────────────────────────────────────────────────────────────
   onScanProgress: (cb) => {
@@ -118,6 +120,9 @@ const api: ElectronAPI = {
     ipcRenderer.on('menu:newSession', h);
     return () => ipcRenderer.removeListener('menu:newSession', h);
   },
+
+  // ── Platform info ────────────────────────────────────────────────────────────
+  platform: process.platform,
 };
 
 contextBridge.exposeInMainWorld('electronAPI', api);

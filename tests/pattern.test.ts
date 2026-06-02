@@ -75,3 +75,43 @@ describe('resolvePattern', () => {
     expect(result).not.toContain(':');
   });
 });
+
+describe('pattern — DataHoarder TYPE_LABEL bindings', () => {
+  const ctx = (cat: string) => ({
+    date: new Date('2024-03-15T12:00:00Z'),
+    category: cat as never,
+  });
+
+  it('resolves {TYPE_LABEL} for documents', () => {
+    expect(resolvePattern('{TYPE_LABEL}/{YYYY}', ctx('documents'))).toBe('Documents/2024');
+  });
+
+  it('resolves {TYPE_LABEL} for audio (Music)', () => {
+    expect(resolvePattern('{TYPE_LABEL}/{YYYY}', ctx('audio'))).toBe('Music/2024');
+  });
+
+  it('resolves {TYPE_LABEL} for design', () => {
+    expect(resolvePattern('{TYPE_LABEL}/{YYYY}', ctx('design'))).toBe('Design/2024');
+  });
+
+  it('resolves {TYPE_LABEL} for 3d', () => {
+    expect(resolvePattern('{TYPE_LABEL}/{YYYY}', ctx('3d'))).toBe('3D/2024');
+  });
+
+  it('still resolves the existing photos / videos / raw labels', () => {
+    expect(resolvePattern('{TYPE_LABEL}', ctx('images'))).toBe('Photos');
+    expect(resolvePattern('{TYPE_LABEL}', ctx('videos'))).toBe('Videos');
+    expect(resolvePattern('{TYPE_LABEL}', ctx('raw'))).toBe('RAW');
+  });
+
+  it('quarter / half-year tokens still resolve in DataHoarder patterns', () => {
+    // Hard requirement from the user: existing date tokens must keep working
+    // in DataHoarder mode. These aren't photo-only.
+    expect(resolvePattern('{TYPE_LABEL}/{YYYY}/{QUARTER}', ctx('documents')))
+      .toBe('Documents/2024/Jan - Mar 2024');
+    expect(resolvePattern('{TYPE_LABEL}/{YYYY}/{HALF}', ctx('documents')))
+      .toBe('Documents/2024/Jan - Jun 2024');
+    expect(resolvePattern('{YEAR_RANGE}/{TYPE_LABEL}', ctx('audio')))
+      .toBe('2020 - 2024/Music');
+  });
+});

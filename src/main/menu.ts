@@ -1,6 +1,5 @@
-import { Menu, MenuItem, BrowserWindow, dialog, shell, app } from 'electron';
+import { Menu, BrowserWindow, dialog, shell, app } from 'electron';
 import fs from 'fs';
-import path from 'path';
 import { getSettings, saveSettings } from './settings-manager';
 import { LOG_DIR, LOG_FILE } from './logger';
 import { getDb } from './database';
@@ -8,7 +7,40 @@ import { logger } from './logger';
 import { Theme } from '../shared/types';
 
 export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
+  const isMac = process.platform === 'darwin';
+  const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
+
+  const aboutItem: Electron.MenuItemConstructorOptions = {
+    label: `About ${app.name}`,
+    click: () => {
+      const win = getWindow();
+      if (!win) return;
+      dialog.showMessageBox(win, {
+        type: 'info',
+        title: `About ${app.name}`,
+        message: app.name,
+        detail: `Version: ${app.getVersion()}\nElectron: ${process.versions.electron}\nNode: ${process.versions.node}`,
+      });
+    },
+  };
+
   const template: Electron.MenuItemConstructorOptions[] = [
+    ...(isMac
+      ? [{
+          label: app.name,
+          submenu: [
+            aboutItem,
+            { type: 'separator' as const },
+            { role: 'services' as const, submenu: [] },
+            { type: 'separator' as const },
+            { role: 'hide' as const },
+            { role: 'hideOthers' as const },
+            { role: 'unhide' as const },
+            { type: 'separator' as const },
+            { role: 'quit' as const },
+          ],
+        }]
+      : []),
     {
       label: 'File',
       submenu: [
@@ -30,7 +62,37 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
         { type: 'separator' },
         buildRecentFoldersMenu(getWindow),
         { type: 'separator' },
-        { role: 'quit', label: 'Exit' },
+        isMac ? { role: 'close' } : { role: 'quit' },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        ...(isMac
+          ? [
+              { role: 'pasteAndMatchStyle' as const },
+              { role: 'delete' as const },
+              { role: 'selectAll' as const },
+              { type: 'separator' as const },
+              {
+                label: 'Speech',
+                submenu: [
+                  { role: 'startSpeaking' as const },
+                  { role: 'stopSpeaking' as const },
+                ],
+              },
+            ]
+          : [
+              { role: 'delete' as const },
+              { type: 'separator' as const },
+              { role: 'selectAll' as const },
+            ]),
       ],
     },
     {
@@ -50,35 +112,55 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
         buildThemeMenu(getWindow),
         { type: 'separator' },
         { role: 'reload' },
-        { role: 'toggleDevTools' },
+        ...(isDev ? [{ role: 'forceReload' as const }, { role: 'toggleDevTools' as const }] : []),
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
       ],
     },
     {
       label: 'Tools',
       submenu: [
         {
-          label: 'Clear Database',
+          label: 'Clear Database…',
           click: async () => {
             const win = getWindow();
             if (!win) return;
+            // Always offer the "with backup" path. Recovering a deleted
+            // 40K-row scan_sessions table is annoying; copying library.db
+            // out of band before the wipe is cheap.
             const { response } = await dialog.showMessageBox(win, {
               type: 'warning',
-              buttons: ['Cancel', 'Clear Database'],
-              defaultId: 0,
+              buttons: ['Cancel', 'Clear (no backup)', 'Backup & Clear'],
+              defaultId: 2,
               cancelId: 0,
               title: 'Clear Database',
               message: 'This will delete all scan sessions and file records.',
-              detail: 'This cannot be undone. Your original files are not affected.',
+              detail: 'This cannot be undone. Your original files are not affected.\n\n"Backup & Clear" copies the current library.db to ~/.photomove first.',
             });
-            if (response === 1) {
-              try {
-                const db = getDb();
-                db.exec('DELETE FROM files; DELETE FROM scan_sessions; DELETE FROM operation_progress;');
-                logger.info('database', 'Database cleared via menu');
-                win.webContents.send('menu:databaseCleared');
-              } catch (err) {
-                logger.error('database', 'Failed to clear database', String(err));
+            if (response === 0) return;
+            try {
+              if (response === 2) {
+                const os = await import('os');
+                const path = await import('path');
+                const fs = await import('fs');
+                const src = path.join(os.homedir(), '.photomove', 'library.db');
+                const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+                const dst = path.join(os.homedir(), '.photomove', `library.backup.${stamp}.db`);
+                if (fs.existsSync(src)) {
+                  fs.copyFileSync(src, dst);
+                  logger.info('database', `Backed up library to ${dst} before clearing`);
+                }
               }
+              const db = getDb();
+              db.exec('DELETE FROM files; DELETE FROM scan_sessions; DELETE FROM operation_progress;');
+              logger.info('database', 'Database cleared via menu');
+              win.webContents.send('menu:databaseCleared');
+            } catch (err) {
+              logger.error('database', 'Failed to clear database', String(err));
             }
           },
         },
@@ -119,22 +201,24 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
       ],
     },
     {
+      label: 'Window',
+      submenu: [
+        { role: 'minimize' },
+        { role: 'zoom' },
+        ...(isMac
+          ? [
+              { type: 'separator' as const },
+              { role: 'front' as const },
+              { type: 'separator' as const },
+              { role: 'window' as const },
+            ]
+          : [{ role: 'close' as const }]),
+      ],
+    },
+    {
       label: 'Help',
       submenu: [
-        {
-          label: 'About PixelPusher',
-          click: () => {
-            const win = getWindow();
-            if (!win) return;
-            dialog.showMessageBox(win, {
-              type: 'info',
-              title: 'About PixelPusher',
-              message: 'PixelPusher',
-              detail: `Version: ${app.getVersion()}\nElectron: ${process.versions.electron}\nNode: ${process.versions.node}`,
-            });
-          },
-        },
-        { type: 'separator' },
+        ...(isMac ? [] : [aboutItem, { type: 'separator' as const }]),
         {
           label: 'View Logs',
           accelerator: 'CmdOrCtrl+Shift+L',

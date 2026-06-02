@@ -1,15 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { DupeGroup, DupeGroupMember, DupeAction } from '../../shared/types';
 
 interface Props {
   sessionId: string;
   totalGroups: number;
   onDone: () => void;
-}
-
-function pathToFileUrl(p: string): string {
-  const normalized = p.replace(/\\/g, '/');
-  return /^[A-Za-z]:/.test(normalized) ? 'file:///' + normalized : 'file://' + normalized;
 }
 
 function fmtSize(b: number): string {
@@ -95,10 +90,19 @@ export function DupeReview({ sessionId, totalGroups, onDone }: Props) {
 
   const handleAutoResolve = async () => {
     setAutoResolving(true);
-    const { resolved } = await window.electronAPI.autoResolveAll(sessionId, action);
-    setAutoResolving(false);
+    try {
+      await window.electronAPI.autoResolveAll(sessionId, action);
+    } finally {
+      setAutoResolving(false);
+    }
     onDone();
   };
+
+  // While a page is loading or a resolve is in flight, lock every action
+  // button. Previous version disabled some on `resolving` only and others
+  // on `loading` only — rapid "Keep Best" clicks at a page boundary could
+  // resolve the wrong (stale) group between IPC round-trips.
+  const actionsDisabled = resolving || loading || autoResolving;
 
   if (loading) {
     return <div style={styles.root}><div style={styles.empty}>Loading duplicate groups…</div></div>;
@@ -160,7 +164,7 @@ export function DupeReview({ sessionId, totalGroups, onDone }: Props) {
             key={member.file_id}
             member={member}
             isKeeper={member.file_id === keeper.file_id}
-            disabled={resolving}
+            disabled={actionsDisabled}
             onKeep={() => resolve(member.file_id)}
           />
         ))}
@@ -170,15 +174,15 @@ export function DupeReview({ sessionId, totalGroups, onDone }: Props) {
       <div style={styles.footer}>
         <button
           className="btn-primary"
-          disabled={resolving}
+          disabled={actionsDisabled}
           onClick={() => resolve(keeper.file_id)}
         >
           Keep Best
         </button>
-        <button className="btn-secondary" disabled={resolving} onClick={keepNewest}>
+        <button className="btn-secondary" disabled={actionsDisabled} onClick={keepNewest}>
           Keep Newest
         </button>
-        <button className="btn-secondary" disabled={resolving} onClick={keepAll}>
+        <button className="btn-secondary" disabled={actionsDisabled} onClick={keepAll}>
           Keep All
         </button>
 
@@ -186,7 +190,7 @@ export function DupeReview({ sessionId, totalGroups, onDone }: Props) {
 
         <button
           className="btn-secondary"
-          disabled={currentIdx === 0 && page === 1}
+          disabled={actionsDisabled || (currentIdx === 0 && page === 1)}
           onClick={() => {
             if (currentIdx > 0) setCurrentIdx(i => i - 1);
             else if (page > 1) { const prev = page - 1; setPage(prev); loadPage(prev); }
@@ -194,7 +198,7 @@ export function DupeReview({ sessionId, totalGroups, onDone }: Props) {
         >
           ← Prev
         </button>
-        <button className="btn-secondary" disabled={resolving} onClick={advance}>
+        <button className="btn-secondary" disabled={actionsDisabled} onClick={advance}>
           Skip →
         </button>
       </div>
@@ -211,16 +215,33 @@ function MemberCard({
   onKeep: () => void;
 }) {
   const f = member.file;
+  // Thumbnails fetched via IPC so the renderer doesn't need img-src 'file:'
+  // in CSP. Main downsamples through sharp and returns a tiny data: URL —
+  // both safer (no path leakage in CSP exceptions) and cheaper (full-res
+  // 24 MP photos were being shipped to the renderer just to be scaled down
+  // in CSS).
+  const [thumb, setThumb] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    window.electronAPI.getThumbnail(f.source_path, 240)
+      .then(url => { if (!cancelled) setThumb(url); })
+      .catch(() => { /* leave thumb null → placeholder */ });
+    return () => { cancelled = true; };
+  }, [f.source_path]);
   return (
     <div style={{ ...styles.card, ...(isKeeper ? styles.cardKeeper : {}) }}>
       {isKeeper && <div style={styles.keeperBadge}>Best</div>}
       <div style={styles.thumbWrap}>
-        <img
-          src={pathToFileUrl(f.source_path)}
-          alt={f.filename}
-          style={styles.thumb}
-          onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
-        />
+        {thumb ? (
+          <img
+            src={thumb}
+            alt={f.filename}
+            style={styles.thumb}
+            onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+          />
+        ) : (
+          <div style={{ color: 'var(--text2)', fontSize: 11 }}>—</div>
+        )}
       </div>
       <div style={styles.meta}>
         <div style={styles.metaFilename} title={f.source_path}>{f.filename}</div>

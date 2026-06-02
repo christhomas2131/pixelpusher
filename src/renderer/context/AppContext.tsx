@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode, useCallback } from 'react';
 import { AppSettings, Theme, LicenseInfo } from '../../shared/types';
 
 interface AppState {
@@ -24,6 +24,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   recentFolders: [],
   windowBounds: null,
   leftPanelWidth: 280,
+  mode: 'photos',
 };
 
 const AppContext = createContext<AppState>({
@@ -56,7 +57,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const l = await window.electronAPI.getLicense();
       setLicense(l);
     } catch {
-      setLicense({ status: 'missing' });
+      setLicense({ status: 'missing', tier: 'free' });
     }
   }, []);
 
@@ -74,10 +75,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
 
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    // Defer applyTheme out of the setState updater — running side effects
+    // inside an updater double-fires in StrictMode and confuses devtools.
+    // Reading the state via a microtask is cheap and keeps the updater pure.
     const handleMqChange = () => {
-      setSettings(prev => {
-        if (prev?.theme === 'system') applyTheme('system');
-        return prev;
+      queueMicrotask(() => {
+        setSettings(prev => {
+          if (prev?.theme === 'system') applyTheme('system');
+          return prev;
+        });
       });
     };
     mq.addEventListener('change', handleMqChange);
@@ -92,13 +98,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (settings) applyTheme(settings.theme);
   }, [settings?.theme]);
 
-  const isPro = license?.status === 'valid';
+  // Tier is the source of truth. M0 introduced LicenseInfo.tier, but two
+  // call sites still derived isPro from `status === 'valid'`. A future "free
+  // trial" license would have status='valid' tier='free' — that should not
+  // unlock Pro features.
+  const isPro = license?.tier === 'pro';
+
+  // Memoize the provider value so consumers don't re-render on every parent
+  // render. Object identity changes were forcing PreviewTable / SummaryBar
+  // to rebuild even when nothing they consumed had actually changed.
+  const value = useMemo(() => ({
+    settings, sessionId, setSessionId, refreshSettings: loadSettings,
+    license, isPro, refreshLicense: loadLicense,
+  }), [settings, sessionId, license, isPro, loadSettings, loadLicense]);
 
   return (
-    <AppContext.Provider value={{
-      settings, sessionId, setSessionId, refreshSettings: loadSettings,
-      license, isPro, refreshLicense: loadLicense,
-    }}>
+    <AppContext.Provider value={value}>
       {children}
     </AppContext.Provider>
   );

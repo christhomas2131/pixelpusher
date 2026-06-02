@@ -1,4 +1,4 @@
-export type FileCategory = 'images' | 'videos' | 'raw';
+export type FileCategory = 'images' | 'videos' | 'raw' | 'documents' | 'audio' | 'design' | '3d';
 
 const MONTH_NAMES = [
   'January','February','March','April','May','June',
@@ -21,6 +21,10 @@ const TYPE_LABELS: Record<string, string> = {
   images: 'Photos',
   videos: 'Videos',
   raw: 'RAW',
+  documents: 'Documents',
+  audio: 'Music',
+  design: 'Design',
+  '3d': '3D',
 };
 
 export interface PatternContext {
@@ -35,7 +39,10 @@ export function resolvePattern(pattern: string, ctx: PatternContext): string {
   if (!pattern) return 'Unknown';
 
   const { date, cameraModel, category, format, yearRangeSize = 5 } = ctx;
-  const d = date ?? null;
+  const raw = date ?? null;
+  // Guard against `Invalid Date` (truthy but getFullYear() → NaN, which
+  // would emit folder names like "NaN/NaN"). Treat as no-date.
+  const d = raw && !isNaN(raw.getTime()) ? raw : null;
 
   if (!d) {
     return pattern.replace(/\{[^}]+\}/g, 'Unknown');

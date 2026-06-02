@@ -1,10 +1,24 @@
 import path from 'path';
+import type { FileCategory } from '../shared/types';
 
 export interface JunkResult {
   isJunk: boolean;
   reason: string | null;
   confidence: 'high' | 'medium' | 'low' | null;
 }
+
+const PHOTO_CATEGORIES = new Set<FileCategory>(['images', 'videos', 'raw']);
+
+// Document-class files (DataHoarder mode) — Office locks, OS metadata, temp files.
+// These are high-confidence regardless of size.
+const DATAHOARDER_FILENAME_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /^~\$/, reason: 'office_lock' },              // ~$Document.docx
+  { pattern: /^\._/, reason: 'macos_metadata' },           // ._foo.pdf (macOS resource fork)
+  { pattern: /\.tmp$/i, reason: 'temp_file' },
+  { pattern: /\.crdownload$/i, reason: 'incomplete_download' },
+  { pattern: /\.partial$/i, reason: 'incomplete_download' },
+  { pattern: /\.[a-f0-9]{8,}\.tmp$/i, reason: 'temp_file' },
+];
 
 const HIGH_CONFIDENCE_DIR_SEGMENTS = new Set([
   'Thumbnails', 'thumbnails', '.thumbnails',
@@ -34,41 +48,60 @@ const HIGH_CONFIDENCE_SUFFIXES: RegExp[] = [
   /_thumbnail\./i,
 ];
 
-const JUNK_SIZE_THRESHOLD = 50_000; // 50KB
+const PHOTO_JUNK_SIZE_THRESHOLD = 50_000;   // 50KB — tiny photos are almost always thumbs
+const DOC_JUNK_SIZE_THRESHOLD = 100;        // 100B — only catch truly broken/empty doc files
 
-export function detectJunk(filePath: string, size: number): JunkResult {
+export function detectJunk(filePath: string, size: number, category?: FileCategory): JunkResult {
   const filename = path.basename(filePath);
   const parts = filePath.split(/[/\\]/);
   const dirParts = parts.slice(0, -1);
 
-  // Path-based (high confidence)
+  // Path-based (high confidence) — applies in every mode
   for (const seg of dirParts) {
     if (HIGH_CONFIDENCE_DIR_SEGMENTS.has(seg)) {
       return { isJunk: true, reason: 'junk_directory', confidence: 'high' };
     }
-    // Partial match for things like SYNOFILE_THUMB_1920x1080
     if (seg.startsWith('SYNOFILE_THUMB') || seg.startsWith('.thumbnail')) {
       return { isJunk: true, reason: 'junk_directory', confidence: 'high' };
     }
   }
 
-  // Filename-based (high confidence)
+  // Universal filename junk (Thumbs.db etc.) regardless of category
   for (const re of HIGH_CONFIDENCE_FILENAMES) {
     if (re.test(filename)) {
       return { isJunk: true, reason: 'system_file', confidence: 'high' };
     }
   }
-  for (const re of HIGH_CONFIDENCE_SUFFIXES) {
-    if (re.test(filename)) {
-      return { isJunk: true, reason: 'thumbnail_suffix', confidence: 'high' };
+  // Universal locks / temp / partial-download patterns — these are junk
+  // regardless of category, so check before the photo/non-photo split.
+  for (const { pattern, reason } of DATAHOARDER_FILENAME_PATTERNS) {
+    if (pattern.test(filename)) {
+      return { isJunk: true, reason, confidence: 'high' };
     }
   }
 
-  // Size-based (medium confidence)
-  if (size < JUNK_SIZE_THRESHOLD) {
-    return { isJunk: true, reason: 'tiny_file', confidence: 'medium' };
+  const isPhotoLike = !category || PHOTO_CATEGORIES.has(category);
+
+  if (isPhotoLike) {
+    // Photos / videos / RAW: existing thumbnail-suffix detection + 50KB threshold.
+    for (const re of HIGH_CONFIDENCE_SUFFIXES) {
+      if (re.test(filename)) {
+        return { isJunk: true, reason: 'thumbnail_suffix', confidence: 'high' };
+      }
+    }
+    if (size < PHOTO_JUNK_SIZE_THRESHOLD) {
+      return { isJunk: true, reason: 'tiny_file', confidence: 'medium' };
+    }
+    return { isJunk: false, reason: null, confidence: null };
   }
 
+  // DataHoarder categories (documents, audio, design, 3d).
+  // Office-lock / macOS-metadata / temp / partial-download patterns are
+  // now checked universally above this block — no need to repeat here.
+  // Genuinely empty/broken files only — don't flag legitimately small docs.
+  if (size < DOC_JUNK_SIZE_THRESHOLD) {
+    return { isJunk: true, reason: 'empty_file', confidence: 'high' };
+  }
   return { isJunk: false, reason: null, confidence: null };
 }
 

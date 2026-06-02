@@ -158,6 +158,7 @@ function FilterBar({ filters, onChange }: { filters: FileFilters; onChange: (f: 
   return (
     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
       <select
+        aria-label="Status filter"
         value={filters.status ?? ''}
         onChange={e => onChange({ ...filters, status: (e.target.value as FileStatus) || undefined })}
         style={{ fontSize: 12, padding: '3px 8px' }}
@@ -170,6 +171,7 @@ function FilterBar({ filters, onChange }: { filters: FileFilters; onChange: (f: 
         <option value="organized">Organized</option>
       </select>
       <select
+        aria-label="Category filter"
         value={filters.category ?? ''}
         onChange={e => onChange({ ...filters, category: (e.target.value as FileCategory) || undefined })}
         style={{ fontSize: 12, padding: '3px 8px' }}
@@ -184,6 +186,7 @@ function FilterBar({ filters, onChange }: { filters: FileFilters; onChange: (f: 
       <input
         type="text"
         placeholder="Search filename…"
+        aria-label="Search filename"
         value={filters.search ?? ''}
         onChange={e => onChange({ ...filters, search: e.target.value || undefined })}
         style={{ fontSize: 12, padding: '3px 8px', width: 180 }}

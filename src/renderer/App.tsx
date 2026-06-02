@@ -8,12 +8,23 @@ import { OrganizeProgressView } from './components/OrganizeProgress';
 import { DupeReview } from './components/DupeReview';
 import { LicenseModal } from './components/LicenseModal';
 import { FolderTreeView } from './components/FolderTreeView';
+import { DryRunPreview } from './components/DryRunPreview';
+import { ModeSwitcher } from './components/ModeSwitcher';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { useScan } from './hooks/useScan';
 import { useFiles } from './hooks/useFiles';
 import { useOrganize } from './hooks/useOrganize';
 import { useHash, HashResult } from './hooks/useHash';
+import { parseProRequiredError, FREE_FILE_CAP, type ProFeature } from '../shared/pro-features';
+import { defaultPatternForMode, type Mode } from '../shared/mode';
+import type { OrganizeOptions, DryRunResult } from '../shared/types';
 import './styles/globals.css';
+
+const PLATFORM = (typeof window !== 'undefined' && window.electronAPI?.platform) || 'unknown';
+const IS_MAC = PLATFORM === 'darwin';
+if (typeof document !== 'undefined') {
+  document.documentElement.setAttribute('data-platform', PLATFORM);
+}
 
 function HashProgressBar({ processed, total }: { processed: number; total: number }) {
   const pct = total > 0 ? Math.round(processed / total * 100) : 0;
@@ -34,7 +45,8 @@ const MAX_PANEL_WIDTH = 500;
 const DEFAULT_PANEL_WIDTH = 280;
 
 function Inner() {
-  const { sessionId, setSessionId, isPro, license, refreshLicense, settings } = useAppContext();
+  const { sessionId, setSessionId, isPro, license, refreshLicense, settings, refreshSettings } = useAppContext();
+  const mode: Mode = settings?.mode ?? 'photos';
   const { state, progress, error, sessionId: scanSessionId, startScan, cancelScan } = useScan();
   const { files, counts, page, totalPages, totalCount, sortBy, sortDir, filters, loading,
     setPage, setSortBy, setFilters, refresh } = useFiles(sessionId);
@@ -47,6 +59,10 @@ function Inner() {
   const [showLicense, setShowLicense] = useState(false);
   const [showTreeView, setShowTreeView] = useState(false);
   const [orgError2, setOrgError2] = useState('');
+  const [licensePrompt, setLicensePrompt] = useState<{ feature: ProFeature; reason: string } | null>(null);
+  const [dryRunOptions, setDryRunOptions] = useState<OrganizeOptions | null>(null);
+  const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null);
+  const [dryRunLoading, setDryRunLoading] = useState(false);
 
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
   const [isDragging, setIsDragging] = useState(false);
@@ -98,22 +114,29 @@ function Inner() {
     if (settings) window.electronAPI.saveSettings({ ...settings, leftPanelWidth: DEFAULT_PANEL_WIDTH });
   };
 
-  useEffect(() => {
-    if (scanSessionId && state === 'done') setSessionId(scanSessionId);
-  }, [scanSessionId, state]);
+  // Pin the latest `refresh` in a ref so polling / one-shot effects always
+  // call the freshest closure. Previous version captured `refresh` at the
+  // moment `state` last changed, which meant filter/sort changes mid-scan
+  // were ignored by the in-flight setInterval.
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
 
   useEffect(() => {
-    if (state === 'done') refresh();
+    if (scanSessionId && state === 'done') setSessionId(scanSessionId);
+  }, [scanSessionId, state, setSessionId]);
+
+  useEffect(() => {
+    if (state === 'done') refreshRef.current();
   }, [state]);
 
   useEffect(() => {
     if (state !== 'scanning' || !scanSessionId) return;
-    const id = setInterval(refresh, 2000);
+    const id = setInterval(() => refreshRef.current(), 2000);
     return () => clearInterval(id);
   }, [state, scanSessionId]);
 
   useEffect(() => {
-    if (hashState === 'complete') refresh();
+    if (hashState === 'complete') refreshRef.current();
   }, [hashState]);
 
   const handleNewScan = () => {
@@ -122,7 +145,31 @@ function Inner() {
     setShowDupeReview(false);
     setShowTreeView(false);
     setOrgError2('');
+    setDryRunOptions(null);
+    setDryRunResult(null);
     setSessionId(null);
+  };
+
+  const handleModeChange = async (next: Mode) => {
+    if (!settings) return;
+    if (next === mode) return;
+    // Save mode + reset folderPattern to mode default so the next scan
+    // starts with sensible defaults; user can still customize after.
+    await window.electronAPI.saveSettings({
+      ...settings,
+      mode: next,
+      folderPattern: defaultPatternForMode(next),
+    });
+    refreshSettings();
+    handleNewScan();
+  };
+
+  const handleModeUpgradeRequired = (target: Mode) => {
+    setLicensePrompt({
+      feature: 'datahoarder_mode',
+      reason: `${target === 'datahoarder' ? 'DataHoarder mode' : 'This mode'} is a Pro feature — organize PDFs, docs, audio, design files, and more.`,
+    });
+    setShowLicense(true);
   };
 
   // Use a ref so the IPC listener always calls the latest version of handleNewScan
@@ -144,42 +191,105 @@ function Inner() {
     refresh();
   };
 
-  const handleOrganize = async (options: Parameters<typeof startOrganize>[0]) => {
+  const handlePreview = async (options: OrganizeOptions) => {
+    setOrgError2('');
+    setDryRunOptions(options);
+    setDryRunResult(null);
+    setDryRunLoading(true);
+    try {
+      const result = await window.electronAPI.dryRunOrganize(options);
+      setDryRunResult(result);
+    } catch (err: any) {
+      const msg = String(err?.message ?? err);
+      setOrgError2(`Preview failed: ${msg}`);
+      setDryRunOptions(null);
+    } finally {
+      setDryRunLoading(false);
+    }
+  };
+
+  const handleConfirmOrganize = async () => {
+    if (!dryRunOptions) return;
+    const options = dryRunOptions;
+    setDryRunOptions(null);
+    setDryRunResult(null);
     setOrgError2('');
     try {
       await startOrganize(options);
     } catch (err: any) {
       const msg = String(err?.message ?? err);
-      if (msg.includes('FREE_TIER_LIMIT')) {
-        setOrgError2('Free tier limited to 100 files. Upgrade to Pro for unlimited.');
+      const proReq = parseProRequiredError(msg);
+      if (proReq) {
+        setOrgError2(proReq.reason);
+        setLicensePrompt(proReq);
         setShowLicense(true);
+      } else {
+        setOrgError2(msg);
       }
     }
   };
+
+  const handleBackFromPreview = () => {
+    setDryRunOptions(null);
+    setDryRunResult(null);
+    setOrgError2('');
+  };
+
+  // Free-tier dry-run can show the full proposed tree, but the Confirm step
+  // is gated when the count exceeds the cap. The renderer surfaces the gate
+  // up-front (before the user clicks Confirm) so the upgrade moment isn't a
+  // surprise modal after a long preview.
+  const dryRunBlock = (() => {
+    if (!dryRunResult || isPro) return undefined;
+    if (dryRunResult.totalFiles <= FREE_FILE_CAP) return undefined;
+    return {
+      reason: `Free tier organizes up to ${FREE_FILE_CAP.toLocaleString()} files at a time. This preview includes ${dryRunResult.totalFiles.toLocaleString()}.`,
+      onUpgrade: () => {
+        setLicensePrompt({
+          feature: 'unlimited_organize',
+          reason: `Upgrade to organize all ${dryRunResult.totalFiles.toLocaleString()} files in one pass.`,
+        });
+        setShowLicense(true);
+      },
+    };
+  })();
 
   const handleExportReport = async () => {
     if (!sessionId) return;
     try { await window.electronAPI.exportReport(sessionId); } catch { /* dismissed */ }
   };
 
+  const showDryRun = !!dryRunOptions;
   const showOrganize    = orgState !== 'idle';
-  const showDestination = sessionId && state === 'done' && !showOrganize && !showDupeReview;
+  const showDestination = sessionId && state === 'done' && !showOrganize && !showDupeReview && !showDryRun;
   const showHashProgress = hashState === 'hashing';
-  const showDupeSection = state === 'done' && !!sessionId && !showOrganize && hashState !== 'hashing';
+  const showDupeSection = state === 'done' && !!sessionId && !showOrganize && hashState !== 'hashing' && !showDryRun;
   const dupeGroupCount = hashResult?.dupeGroups ?? counts?.dupes ?? 0;
   const organizeComplete = orgState === 'complete';
   const isDev = license?.developer === true;
 
   return (
     <div style={styles.root}>
-      <header style={styles.header}>
+      <header
+        className="app-titlebar"
+        style={{
+          ...styles.header,
+          ...(IS_MAC ? ({ paddingLeft: 84, WebkitAppRegion: 'drag' } as React.CSSProperties) : {}),
+        }}
+      >
         <div style={styles.logo}>
           {isDev && <span style={styles.devBadge}>DEV</span>}
           PixelPusher
         </div>
+        <ModeSwitcher
+          mode={mode}
+          isPro={isPro}
+          onChange={handleModeChange}
+          onUpgradeRequired={handleModeUpgradeRequired}
+        />
         {error && <div style={styles.errorBanner}>{error}</div>}
         {orgError2 && <div style={{ ...styles.errorBanner, background: 'var(--warn)' }}>{orgError2}</div>}
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           {organizeComplete && sessionId && (
             <>
               <button
@@ -215,6 +325,7 @@ function Inner() {
       <div style={styles.body}>
         <div style={{ ...styles.sidebar, width: panelWidth }}>
           <ScanPanel
+            mode={mode}
             onScan={startScan}
             onCancel={cancelScan}
             scanning={state === 'scanning'}
@@ -263,8 +374,9 @@ function Inner() {
           {showDestination && (
             <DestinationPanel
               sessionId={sessionId!}
+              mode={mode}
               counts={counts}
-              onOrganize={handleOrganize}
+              onPreview={handlePreview}
             />
           )}
         </div>
@@ -276,7 +388,22 @@ function Inner() {
         />
 
         <div style={styles.main}>
-          {showDupeReview && sessionId ? (
+          {showDryRun ? (
+            dryRunLoading || !dryRunResult ? (
+              <div style={styles.welcome}>
+                <div style={styles.welcomeTitle}>Computing preview…</div>
+                <div style={styles.welcomeSub}>Walking the destination tree without touching a single file.</div>
+              </div>
+            ) : (
+              <DryRunPreview
+                options={dryRunOptions!}
+                result={dryRunResult}
+                blockedByTier={dryRunBlock}
+                onConfirm={handleConfirmOrganize}
+                onBack={handleBackFromPreview}
+              />
+            )
+          ) : showDupeReview && sessionId ? (
             <DupeReview
               sessionId={sessionId}
               totalGroups={dupeGroupCount}
@@ -331,8 +458,9 @@ function Inner() {
       {showLicense && (
         <LicenseModal
           license={license}
-          onClose={() => setShowLicense(false)}
-          onActivated={() => { refreshLicense(); setShowLicense(false); }}
+          prompt={licensePrompt}
+          onClose={() => { setShowLicense(false); setLicensePrompt(null); }}
+          onActivated={() => { refreshLicense(); setShowLicense(false); setLicensePrompt(null); }}
         />
       )}
     </div>

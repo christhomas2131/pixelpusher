@@ -1,7 +1,8 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { FileRecord, FileCounts, GetFilesPageRequest, FileFilters } from '../../shared/types';
 
 const PAGE_SIZE = 100;
+const SEARCH_DEBOUNCE_MS = 300;
 
 interface UseFilesReturn {
   files: FileRecord[];
@@ -13,6 +14,7 @@ interface UseFilesReturn {
   sortDir: 'asc' | 'desc';
   filters: FileFilters;
   loading: boolean;
+  loadError: string | null;
   setPage: (p: number) => void;
   setSortBy: (col: string) => void;
   toggleSortDir: () => void;
@@ -29,7 +31,28 @@ export function useFiles(sessionId: string | null): UseFilesReturn {
   const [sortBy, setSortBy] = useState('date_taken');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [filters, setFilters] = useState<FileFilters>({});
+  // Effective filters — `filters` updates on every keystroke (controlled
+  // input), `debouncedFilters` lags 300 ms so we don't fire an IPC round-trip
+  // per character on a 40 K-file DB.
+  const [debouncedFilters, setDebouncedFilters] = useState<FileFilters>({});
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Filter debounce: only the `search` field is keystroke-driven; status /
+  // category change on explicit clicks and want to apply immediately, so
+  // bypass the debounce for those.
+  const lastNonSearchFiltersRef = useRef<Omit<FileFilters, 'search'>>({});
+  useEffect(() => {
+    const { search, ...rest } = filters;
+    const nonSearchChanged = JSON.stringify(rest) !== JSON.stringify(lastNonSearchFiltersRef.current);
+    lastNonSearchFiltersRef.current = rest;
+    if (nonSearchChanged) {
+      setDebouncedFilters(filters);
+      return;
+    }
+    const id = setTimeout(() => setDebouncedFilters(filters), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(id);
+  }, [filters]);
 
   const load = useCallback(async () => {
     if (!sessionId) return;
@@ -41,7 +64,7 @@ export function useFiles(sessionId: string | null): UseFilesReturn {
         pageSize: PAGE_SIZE,
         sortBy,
         sortDir,
-        filters: Object.keys(filters).length > 0 ? filters : undefined,
+        filters: Object.keys(debouncedFilters).length > 0 ? debouncedFilters : undefined,
       };
       const [pageRes, countsRes] = await Promise.all([
         window.electronAPI.getFilesPage(req),
@@ -51,12 +74,14 @@ export function useFiles(sessionId: string | null): UseFilesReturn {
       setTotalPages(pageRes.totalPages);
       setTotalCount(pageRes.totalCount);
       setCounts(countsRes);
-    } catch {
-      // ignore
+      setLoadError(null);
+    } catch (err: any) {
+      // Surface the failure so the user sees something other than a stuck spinner.
+      setLoadError(String(err?.message ?? err));
     } finally {
       setLoading(false);
     }
-  }, [sessionId, page, sortBy, sortDir, filters]);
+  }, [sessionId, page, sortBy, sortDir, debouncedFilters]);
 
   useEffect(() => {
     if (sessionId) load();
@@ -77,7 +102,7 @@ export function useFiles(sessionId: string | null): UseFilesReturn {
 
   return {
     files, counts, page, totalPages, totalCount,
-    sortBy, sortDir, filters, loading,
+    sortBy, sortDir, filters, loading, loadError,
     setPage: handleSetPage,
     setSortBy: handleSetSortBy,
     toggleSortDir,

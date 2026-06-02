@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { FileRecord } from '../../shared/types';
 
 interface Props {
@@ -51,26 +51,33 @@ function TreeNodeView({ node, depth = 0 }: { node: TreeNode; depth?: number }) {
 }
 
 export function FolderTreeView({ files, totalCount }: Props) {
-  const sourcePaths = files.map(f => {
-    const norm = f.source_path.replace(/\\/g, '/');
-    const parts = norm.split('/');
-    return parts.slice(0, -1).join('/');
-  });
-
-  const destPaths = files
-    .filter(f => f.proposed_destination)
-    .map(f => {
-      const norm = (f.proposed_destination ?? '').replace(/\\/g, '/');
+  // Memoize the tree build — previous version walked the entire `files`
+  // array twice and allocated two Maps per render. Even at the 100-row cap
+  // that's wasted work when only an unrelated parent prop changes.
+  const { sourceTree, destTree, sourceFolders, destFolders, reduction, destCount } = useMemo(() => {
+    const sourcePaths = files.map(f => {
+      const norm = f.source_path.replace(/\\/g, '/');
       const parts = norm.split('/');
       return parts.slice(0, -1).join('/');
     });
-
-  const sourceTree = buildTree(sourcePaths);
-  const destTree = buildTree(destPaths);
-
-  const sourceFolders = new Set(sourcePaths).size;
-  const destFolders = new Set(destPaths).size;
-  const reduction = sourceFolders > 0 ? Math.round((1 - destFolders / sourceFolders) * 100) : 0;
+    const destPaths = files
+      .filter(f => f.proposed_destination)
+      .map(f => {
+        const norm = (f.proposed_destination ?? '').replace(/\\/g, '/');
+        const parts = norm.split('/');
+        return parts.slice(0, -1).join('/');
+      });
+    const srcFolders = new Set(sourcePaths).size;
+    const dstFolders = new Set(destPaths).size;
+    return {
+      sourceTree: buildTree(sourcePaths),
+      destTree: buildTree(destPaths),
+      sourceFolders: srcFolders,
+      destFolders: dstFolders,
+      reduction: srcFolders > 0 ? Math.round((1 - dstFolders / srcFolders) * 100) : 0,
+      destCount: destPaths.length,
+    };
+  }, [files]);
 
   return (
     <div style={styles.root}>
@@ -104,7 +111,7 @@ export function FolderTreeView({ files, totalCount }: Props) {
       <div style={styles.panel}>
         <div style={{ ...styles.panelHeader, color: 'var(--success)' }}>After</div>
         <div style={styles.treeArea}>
-          {destPaths.length === 0 ? (
+          {destCount === 0 ? (
             <div style={styles.empty}>Organize to preview destination structure</div>
           ) : (
             Array.from(destTree.children.values()).map(n => (

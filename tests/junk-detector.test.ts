@@ -129,3 +129,69 @@ describe('detectJunkByDimensions', () => {
     expect(r.isJunk).toBe(false);
   });
 });
+
+describe('detectJunk — DataHoarder categories', () => {
+  it('flags Office lock files (~$Document.docx)', () => {
+    const r = detectJunk('/docs/~$report.docx', 5_000, 'documents');
+    expect(r.isJunk).toBe(true);
+    expect(r.reason).toBe('office_lock');
+    expect(r.confidence).toBe('high');
+  });
+
+  it('flags macOS resource forks (._foo.pdf)', () => {
+    const r = detectJunk('/docs/._receipt.pdf', 4_000, 'documents');
+    expect(r.isJunk).toBe(true);
+    expect(r.reason).toBe('macos_metadata');
+  });
+
+  it('flags .tmp files', () => {
+    const r = detectJunk('/docs/working.tmp', 100_000, 'documents');
+    expect(r.isJunk).toBe(true);
+    expect(r.reason).toBe('temp_file');
+  });
+
+  it('flags .crdownload incomplete downloads', () => {
+    const r = detectJunk('/docs/file.pdf.crdownload', 5_000_000, 'documents');
+    expect(r.isJunk).toBe(true);
+    expect(r.reason).toBe('incomplete_download');
+  });
+
+  it('does NOT apply the 50KB photo threshold to docs', () => {
+    // A perfectly normal small PDF (e.g. a 30KB receipt) shouldn't be junk.
+    const r = detectJunk('/docs/receipts/grocery.pdf', 30_000, 'documents');
+    expect(r.isJunk).toBe(false);
+  });
+
+  it('does NOT apply the 50KB threshold to audio files (e.g. tiny samples)', () => {
+    const r = detectJunk('/sounds/click.wav', 8_000, 'audio');
+    expect(r.isJunk).toBe(false);
+  });
+
+  it('does flag near-empty docs (under 100B) as broken', () => {
+    const r = detectJunk('/docs/somehow_empty.pdf', 50, 'documents');
+    expect(r.isJunk).toBe(true);
+    expect(r.reason).toBe('empty_file');
+  });
+
+  it('still flags Thumbs.db regardless of category', () => {
+    const r = detectJunk('/docs/Thumbs.db', 12_000, 'documents');
+    expect(r.isJunk).toBe(true);
+    expect(r.reason).toBe('system_file');
+  });
+
+  it('still flags __MACOSX directories regardless of category', () => {
+    const r = detectJunk('/docs/__MACOSX/foo.pdf', 100_000, 'documents');
+    expect(r.isJunk).toBe(true);
+    expect(r.reason).toBe('junk_directory');
+  });
+
+  it('flags ~$ Office locks even in images mode', () => {
+    // ~$something.jpg is unusual but if it shows up in a photos scan it's
+    // still a temp file we want gone. The office-lock pattern fires before
+    // the size-based "tiny_file" rule because it's a higher-confidence
+    // signal than "small image".
+    const r = detectJunk('/photos/~$weird.jpg', 30_000, 'images');
+    expect(r.isJunk).toBe(true);
+    expect(r.reason).toBe('office_lock');
+  });
+});

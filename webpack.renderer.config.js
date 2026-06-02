@@ -2,9 +2,11 @@ const path = require('path');
 const webpack = require('webpack');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 
-module.exports = {
+module.exports = (_env, argv) => ({
   entry: './src/renderer/index.tsx',
   target: 'web',
+  // CSP forbids 'unsafe-eval'. Default dev devtool ('eval') would break.
+  devtool: argv.mode === 'production' ? 'source-map' : 'cheap-module-source-map',
   output: {
     path: path.resolve(__dirname, 'dist/renderer'),
     filename: 'renderer.js',
@@ -45,4 +47,4 @@ module.exports = {
     hot: true,
     devMiddleware: { publicPath: '/' },
   },
-};
+});

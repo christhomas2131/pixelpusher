@@ -3,6 +3,8 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import { FileRecord, FileCounts, GetFilesPageRequest, GetFilesPageResponse, DupeGroup, DupeGroupMember, DupeAction } from '../shared/types';
+import { runMigrations } from './migrations';
+import { logger } from './logger';
 
 const DB_DIR = path.join(os.homedir(), '.photomove');
 const DB_PATH = path.join(DB_DIR, 'library.db');
@@ -22,39 +24,51 @@ export function getDb(): Database.Database {
   return db;
 }
 
+function applyPragmas(instance: Database.Database): void {
+  instance.pragma('journal_mode = WAL');
+  instance.pragma('synchronous = NORMAL');
+  instance.pragma('cache_size = -64000');
+  instance.pragma('foreign_keys = ON');
+  instance.pragma('busy_timeout = 10000');
+}
+
 function openDb(dbPath: string): Database.Database {
   let instance: Database.Database;
   try {
     instance = new Database(dbPath);
-    instance.pragma('journal_mode = WAL');
-    instance.pragma('synchronous = NORMAL');
-    instance.pragma('cache_size = -64000');
-    instance.pragma('foreign_keys = ON');
-    instance.pragma('busy_timeout = 10000');
+    applyPragmas(instance);
 
-    // Health check: detect corruption before creating tables
+    // Health check: detect corruption before applying migrations
     const check = instance.pragma('quick_check', { simple: true }) as string;
     if (check !== 'ok') {
       instance.close();
       throw new Error(`quick_check: ${check}`);
     }
 
-    createTables(instance);
+    runMigrations(instance, undefined, logger);
     return instance;
   } catch (err: any) {
-    // Attempt to back up the corrupt file and start fresh
+    // Attempt to back up the corrupt file and start fresh. We log loudly
+    // (logger + console + a sentinel file) so the user can find the backup
+    // — auto-recovery without a breadcrumb made data loss easy to miss.
     if (fs.existsSync(dbPath)) {
       const corruptPath = dbPath + `.corrupt.${Date.now()}`;
       try { fs.renameSync(dbPath, corruptPath); } catch {}
-      console.error(`[database] Corrupt DB backed up to ${corruptPath}, creating fresh.`);
+      const msg = `Corrupt DB detected at ${dbPath}. Backed up to ${corruptPath}. A fresh database has been created — your original files are NOT affected, but scan history is lost.`;
+      console.error(`[database] ${msg}`);
+      try {
+        logger.error('database', msg, String(err?.message ?? err));
+        // Drop a marker the next startup can surface to the user.
+        fs.writeFileSync(
+          path.join(DB_DIR, 'last-corruption.txt'),
+          `${new Date().toISOString()}\n${msg}\n`,
+          'utf8',
+        );
+      } catch { /* best-effort */ }
     }
     const fresh = new Database(dbPath);
-    fresh.pragma('journal_mode = WAL');
-    fresh.pragma('synchronous = NORMAL');
-    fresh.pragma('cache_size = -64000');
-    fresh.pragma('foreign_keys = ON');
-    fresh.pragma('busy_timeout = 10000');
-    createTables(fresh);
+    applyPragmas(fresh);
+    runMigrations(fresh, undefined, logger);
     return fresh;
   }
 }
@@ -68,101 +82,19 @@ export function closeDb(): void {
   db = null;
 }
 
-function createTables(db: Database.Database) {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS scan_sessions (
-      id TEXT PRIMARY KEY,
-      source_folders TEXT NOT NULL,
-      started_at TEXT NOT NULL,
-      completed_at TEXT,
-      total_files INTEGER DEFAULT 0,
-      total_size INTEGER DEFAULT 0,
-      scan_depth TEXT DEFAULT 'quick',
-      scan_speed TEXT DEFAULT 'safe',
-      status TEXT DEFAULT 'running'
-    );
-
-    CREATE TABLE IF NOT EXISTS files (
-      id TEXT PRIMARY KEY,
-      filename TEXT NOT NULL,
-      source_path TEXT NOT NULL,
-      proposed_destination TEXT,
-      size INTEGER NOT NULL,
-      date_source TEXT,
-      date_taken TEXT,
-      camera_make TEXT,
-      camera_model TEXT,
-      gps_lat REAL,
-      gps_lng REAL,
-      width INTEGER,
-      height INTEGER,
-      format TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending',
-      junk_reason TEXT,
-      junk_confidence TEXT,
-      phash TEXT,
-      file_category TEXT DEFAULT 'images',
-      extended_meta TEXT,
-      metadata_depth TEXT DEFAULT 'quick',
-      error_message TEXT,
-      source_index INTEGER DEFAULT 0,
-      source_label TEXT DEFAULT 'Source A',
-      scan_session_id TEXT NOT NULL,
-      created_at TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_files_session ON files(scan_session_id);
-    CREATE INDEX IF NOT EXISTS idx_files_session_status ON files(scan_session_id, status);
-    CREATE INDEX IF NOT EXISTS idx_files_session_id ON files(scan_session_id, id);
-    CREATE INDEX IF NOT EXISTS idx_files_phash ON files(phash) WHERE phash IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS idx_files_date ON files(scan_session_id, date_taken);
-
-    CREATE TABLE IF NOT EXISTS dupe_groups (
-      id TEXT PRIMARY KEY,
-      scan_session_id TEXT NOT NULL,
-      member_count INTEGER NOT NULL DEFAULT 0,
-      status TEXT NOT NULL DEFAULT 'pending',
-      created_at TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_dupe_groups_session ON dupe_groups(scan_session_id);
-
-    CREATE TABLE IF NOT EXISTS dupe_group_members (
-      group_id TEXT NOT NULL,
-      file_id TEXT NOT NULL,
-      is_keeper INTEGER NOT NULL DEFAULT 0,
-      rank INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (group_id, file_id)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_dupe_members_group ON dupe_group_members(group_id);
-    CREATE INDEX IF NOT EXISTS idx_dupe_members_file  ON dupe_group_members(file_id);
-
-    CREATE TABLE IF NOT EXISTS operation_progress (
-      session_id TEXT PRIMARY KEY,
-      total_files INTEGER,
-      processed_files INTEGER DEFAULT 0,
-      successful_files INTEGER DEFAULT 0,
-      error_files INTEGER DEFAULT 0,
-      skipped_files INTEGER DEFAULT 0,
-      last_processed_id TEXT,
-      status TEXT DEFAULT 'running',
-      updated_at TEXT DEFAULT (datetime('now'))
-    );
-  `);
-}
 
 export function insertScanSession(session: {
   id: string;
   sourceFolders: string[];
   scanDepth: string;
   scanSpeed: string;
+  mode: string;
 }): void {
   const db = getDb();
   db.prepare(`
-    INSERT INTO scan_sessions (id, source_folders, started_at, scan_depth, scan_speed, status)
-    VALUES (?, ?, datetime('now'), ?, ?, 'running')
-  `).run(session.id, JSON.stringify(session.sourceFolders), session.scanDepth, session.scanSpeed);
+    INSERT INTO scan_sessions (id, source_folders, started_at, scan_depth, scan_speed, status, mode)
+    VALUES (?, ?, datetime('now'), ?, ?, 'running', ?)
+  `).run(session.id, JSON.stringify(session.sourceFolders), session.scanDepth, session.scanSpeed, session.mode);
 }
 
 export function completeScanSession(id: string, totalFiles: number, totalSize: number): void {
@@ -199,11 +131,33 @@ export function insertFilesBatch(files: Omit<FileRecord, 'created_at'>[]): void 
   insertMany(files);
 }
 
+// Hard cap on page-number to keep OFFSET cheap. The indexes added in
+// migration 1 (idx_files_session_status, idx_files_session_id,
+// idx_files_date) make OFFSET fast up to a few thousand rows, but jumping
+// to page 10,000 would scan-and-discard millions of index entries.
+// CLAUDE.md: "Never use OFFSET pagination on large tables (use keyset)."
+// The renderer never exposes a "jump to page" UI — only prev/next — so
+// realistic page numbers stay under 100. We cap an order of magnitude
+// higher than that and throw on overshoot so a buggy renderer can't tank
+// the main process.
+const MAX_PAGE = 1000;
+
+// Escape a user-supplied search term for use in `LIKE … ESCAPE '\'`. Without
+// this, '_' acts as a single-char wildcard and '%' as a multi-char wildcard,
+// which over-matches when a user pastes a path containing those chars.
+function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, ch => '\\' + ch);
+}
+
 export function getFilesPaginated(request: GetFilesPageRequest): GetFilesPageResponse {
   const db = getDb();
   const { sessionId, page, pageSize, sortBy, sortDir, filters } = request;
   const safeSortCol = ALLOWED_SORT_COLS.has(sortBy) ? sortBy : 'created_at';
   const safeSortDir = sortDir === 'desc' ? 'DESC' : 'ASC';
+
+  if (page > MAX_PAGE) {
+    throw new Error(`Page ${page} exceeds MAX_PAGE=${MAX_PAGE}. Use filters to narrow the result set.`);
+  }
 
   const conditions: string[] = ['scan_session_id = @sessionId'];
   const params: Record<string, unknown> = { sessionId };
@@ -217,17 +171,19 @@ export function getFilesPaginated(request: GetFilesPageRequest): GetFilesPageRes
     params.category = filters.category;
   }
   if (filters?.search) {
-    conditions.push('(filename LIKE @search OR source_path LIKE @search)');
-    params.search = `%${filters.search}%`;
+    conditions.push("(filename LIKE @search ESCAPE '\\' OR source_path LIKE @search ESCAPE '\\')");
+    params.search = `%${escapeLike(filters.search)}%`;
   }
 
   const where = conditions.join(' AND ');
   const offset = (page - 1) * pageSize;
 
   const totalCount = (db.prepare(`SELECT COUNT(*) as n FROM files WHERE ${where}`).get(params) as { n: number }).n;
+  // Stable secondary sort by id keeps page boundaries deterministic when the
+  // primary sort column has ties (e.g. many files at the same date_taken).
   const files = db.prepare(`
     SELECT * FROM files WHERE ${where}
-    ORDER BY ${safeSortCol} ${safeSortDir}
+    ORDER BY ${safeSortCol} ${safeSortDir}, id ASC
     LIMIT @limit OFFSET @offset
   `).all({ ...params, limit: pageSize, offset }) as FileRecord[];
 
@@ -266,6 +222,43 @@ export function updateFileHashBatch(updates: { id: string; phash: string | null 
   run(updates);
 }
 
+// ── Byte-hash variants (DataHoarder) ─────────────────────────────────────────
+// Mirror of the phash flow above for non-photo categories. Keeps the queries
+// surface-level identical so ipc-handlers.ts can dispatch on mode without
+// branching on schema specifics.
+
+export function getByteHashableFiles(sessionId: string, lastId: string, limit: number): FileRecord[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT * FROM files
+    WHERE scan_session_id = ? AND byte_hash IS NULL AND status = 'ready'
+      AND file_category IN ('documents','audio','design','3d') AND id > ?
+    ORDER BY id LIMIT ?
+  `).all(sessionId, lastId, limit) as FileRecord[];
+}
+
+export function getByteHashableCount(sessionId: string): number {
+  const db = getDb();
+  return (db.prepare(
+    "SELECT COUNT(*) as n FROM files WHERE scan_session_id = ? AND byte_hash IS NULL AND status = 'ready' AND file_category IN ('documents','audio','design','3d')"
+  ).get(sessionId) as { n: number }).n;
+}
+
+export function updateFileByteHashBatch(updates: { id: string; byte_hash: string | null }[]): void {
+  const db = getDb();
+  const stmt = db.prepare('UPDATE files SET byte_hash = @byte_hash WHERE id = @id');
+  const run = db.transaction((rows: { id: string; byte_hash: string | null }[]) => {
+    for (const row of rows) stmt.run(row);
+  });
+  run(updates);
+}
+
+export function getScanSessionMode(sessionId: string): string {
+  const db = getDb();
+  const row = db.prepare('SELECT mode FROM scan_sessions WHERE id = ?').get(sessionId) as { mode: string } | undefined;
+  return row?.mode ?? 'photos';
+}
+
 export function getDupeGroupCount(sessionId: string): number {
   const db = getDb();
   return (db.prepare(
@@ -282,6 +275,11 @@ export interface DupeGroupRow {
   is_keeper: number;
   rank: number;
 }
+
+// Cap members fetched per group. Visually reviewing 50 dupes side-by-side is
+// already absurd; one group with 5000 members would otherwise balloon the IPC
+// response and stall the renderer.
+const MAX_MEMBERS_PER_GROUP = 50;
 
 export function getDupeGroupsPaginated(
   sessionId: string,
@@ -302,17 +300,24 @@ export function getDupeGroupsPaginated(
   if (groupIds.length === 0) return { groups: [], total };
 
   const placeholders = groupIds.map(() => '?').join(',');
+  // ROW_NUMBER() OVER (PARTITION BY group_id ORDER BY rank) keeps the top-N
+  // members per group at SQL level — bounded response size regardless of
+  // how many files clustered together.
   const rows = db.prepare(`
-    SELECT g.id as group_id, g.scan_session_id, g.member_count, g.status,
-           m.file_id, m.is_keeper, m.rank,
-           f.filename, f.source_path, f.size, f.date_taken, f.camera_model,
-           f.width, f.height, f.format, f.file_category, f.date_source,
-           f.scan_session_id as file_session_id, f.source_label, f.source_index
-    FROM dupe_groups g
-    JOIN dupe_group_members m ON m.group_id = g.id
-    JOIN files f ON f.id = m.file_id
-    WHERE g.id IN (${placeholders})
-    ORDER BY g.id, m.rank
+    SELECT * FROM (
+      SELECT g.id as group_id, g.scan_session_id, g.member_count, g.status,
+             m.file_id, m.is_keeper, m.rank,
+             f.filename, f.source_path, f.size, f.date_taken, f.camera_model,
+             f.width, f.height, f.format, f.file_category, f.date_source,
+             f.scan_session_id as file_session_id, f.source_label, f.source_index,
+             ROW_NUMBER() OVER (PARTITION BY g.id ORDER BY m.rank) AS rn
+      FROM dupe_groups g
+      JOIN dupe_group_members m ON m.group_id = g.id
+      JOIN files f ON f.id = m.file_id
+      WHERE g.id IN (${placeholders})
+    )
+    WHERE rn <= ${MAX_MEMBERS_PER_GROUP}
+    ORDER BY group_id, rank
   `).all(...groupIds) as any[];
 
   // Reassemble into DupeGroup[]
@@ -380,11 +385,15 @@ export function resolveDupeGroup(
     db.prepare('UPDATE dupe_group_members SET is_keeper = CASE WHEN file_id = ? THEN 1 ELSE 0 END WHERE group_id = ?')
       .run(keeperId, groupId);
 
-    // Mark non-keepers according to action
+    // Mark non-keepers according to action. Encode the *destiny* in
+    // junk_reason so a later debug session can tell the difference between
+    // a file that was deleted from disk vs one that was moved to quarantine
+    // (source_path is stale either way, but they're different operations).
     if (action !== 'ignore') {
+      const reason = action === 'quarantine' ? 'duplicate_quarantined' : 'duplicate_deleted';
       db.prepare(
-        "UPDATE files SET status = 'junk', junk_reason = 'duplicate', junk_confidence = 'high' WHERE id IN (SELECT file_id FROM dupe_group_members WHERE group_id = ? AND file_id != ?)"
-      ).run(groupId, keeperId);
+        "UPDATE files SET status = 'junk', junk_reason = ?, junk_confidence = 'high' WHERE id IN (SELECT file_id FROM dupe_group_members WHERE group_id = ? AND file_id != ?)"
+      ).run(reason, groupId, keeperId);
     }
 
     // Resolve group
@@ -423,7 +432,13 @@ export function getFileCounts(sessionId: string): FileCounts {
   const junk     = (db.prepare("SELECT COUNT(*) as n FROM files WHERE scan_session_id = ? AND status = 'junk'").get(sessionId) as { n: number }).n;
 
   const catRows = db.prepare('SELECT file_category, COUNT(*) as n FROM files WHERE scan_session_id = ? GROUP BY file_category').all(sessionId) as { file_category: string; n: number }[];
-  const byCategory = { images: 0, videos: 0, raw: 0 } as Record<string, number>;
+  // Initialize every FileCategory key to 0 so DataHoarder categories
+  // (documents/audio/design/3d) don't return `undefined` and break
+  // arithmetic in the renderer (e.g. `counts.byCategory.documents + 1` → NaN).
+  const byCategory: Record<string, number> = {
+    images: 0, videos: 0, raw: 0,
+    documents: 0, audio: 0, design: 0, '3d': 0,
+  };
   for (const row of catRows) byCategory[row.file_category] = row.n;
 
   const dupes = getDupeGroupCount(sessionId);
@@ -481,6 +496,7 @@ export interface ExifUpdateRow {
   gps_lng: number | null;
   width: number | null;
   height: number | null;
+  extended_meta: string | null;
   metadata_depth: string;
   status: string;
   error_message: string | null;
@@ -500,6 +516,7 @@ export function updateFilesExifBatch(updates: ExifUpdateRow[]): void {
       gps_lng         = @gps_lng,
       width           = @width,
       height          = @height,
+      extended_meta   = @extended_meta,
       metadata_depth  = @metadata_depth,
       status          = @status,
       error_message   = @error_message,

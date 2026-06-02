@@ -4,6 +4,19 @@
   padding: 0;
 }
 
+[data-platform="darwin"] .app-titlebar {
+  -webkit-app-region: drag;
+  -webkit-user-select: none;
+  user-select: none;
+}
+[data-platform="darwin"] .app-titlebar button,
+[data-platform="darwin"] .app-titlebar input,
+[data-platform="darwin"] .app-titlebar select,
+[data-platform="darwin"] .app-titlebar a,
+[data-platform="darwin"] .app-titlebar .no-drag {
+  -webkit-app-region: no-drag;
+}
+
 :root {
   --bg: #0F0F14;
   --bg2: #15151D;

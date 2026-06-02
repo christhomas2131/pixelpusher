@@ -1,7 +1,18 @@
 node_modules/
 dist/
 release/
-build/
 chat history/
 *.log
 .DS_Store
+.env
+.env.local
+*.p8
+*.p12
+test-results/
+playwright-report/
+playwright/.cache/
+
+# build/ contains generated icons + tracked Mac config (entitlements).
+# Ignore build artifacts but keep the entitlements plist under version control.
+build/*
+!build/entitlements.mac.plist

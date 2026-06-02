@@ -10,14 +10,17 @@ import {
   updateFilesExifBatch, ExifUpdateRow,
   getFilesForOrganize, getOrganizeTotals, getDb,
   getHashableFiles, getHashableCount, updateFileHashBatch,
+  getByteHashableFiles, getByteHashableCount, updateFileByteHashBatch,
+  getScanSessionMode,
   getDupeGroupsPaginated, resolveDupeGroup, getDupeGroupCount,
 } from './database';
 import { scanDirectory, requestScanCancel } from './file-scanner';
-import { readFileMeta, closeExiftool } from './exif-reader';
+import { readFileMeta, closeExiftool, isExiftoolDead } from './exif-reader';
 import { assertDriveReady } from './drive-check';
 import { getSettings, saveSettings } from './settings-manager';
 import { logger } from './logger';
 import { LOG_DIR } from './logger';
+import { setDockProgress, clearDockProgress, setDockBadge, clearDockBadge } from './mac-dock';
 import {
   ScanOptions, AppSettings, GetFilesPageRequest,
   ScanDepth, ScanSpeed, ScanProgress,
@@ -28,11 +31,15 @@ import {
   OperationLog, getOperationHistory, readLogEntries, getOperationMode,
 } from './operation-log';
 import { safeCopy, safeMove, resolveConflict, buildFullDestination, humanizeFileError } from './file-mover';
+import { dryRunOrganize } from './dry-run';
 import { computePHash } from './hash-engine';
-import { detectDuplicates } from './dupe-detector';
+import { computeByteHash } from './byte-hash-engine';
+import { detectDuplicates, detectByteHashDuplicates } from './dupe-detector';
 import { checkTakeout } from './takeout-detector';
 import { getLicenseInfo, activateLicense, deactivateLicense, isPro } from './license-manager';
 import { BATCH_SIZE_HASH } from '../shared/constants';
+import { FREE_FILE_CAP, FREE_DUPE_GROUPS_CAP, proRequiredError } from '../shared/pro-features';
+import { defaultCategoriesForMode, type Mode } from '../shared/mode';
 
 let scanRunning = false;
 let cancelScan = false;
@@ -85,7 +92,8 @@ async function extractMetadataPhase(
   scanDepth: ScanDepth,
   scanSpeed: ScanSpeed,
   totalDiscovered: number,
-  win: BrowserWindow
+  win: BrowserWindow,
+  mode: Mode
 ): Promise<void> {
   const { batchSize, maxProcs } = getScanSpeedConfig(scanSpeed);
   const total = getPendingCount(sessionId);
@@ -108,7 +116,7 @@ async function extractMetadataPhase(
 
     // Read EXIF for entire batch in parallel
     const results = await Promise.allSettled(
-      batch.map(f => readFileMeta(f, scanDepth, maxProcs))
+      batch.map(f => readFileMeta(f, scanDepth, maxProcs, mode))
     );
 
     // Build DB update rows
@@ -127,6 +135,7 @@ async function extractMetadataPhase(
           gps_lng: meta.gps_lng,
           width: meta.width,
           height: meta.height,
+          extended_meta: meta.extended_meta,
           metadata_depth: scanDepth,
           status: isJunk ? 'junk' : (file.status === 'pending' ? 'ready' : file.status),
           error_message: meta.error_message,
@@ -144,6 +153,7 @@ async function extractMetadataPhase(
         gps_lng: null,
         width: null,
         height: null,
+        extended_meta: null,
         metadata_depth: scanDepth,
         status: 'error',
         error_message: 'extraction_failed',
@@ -176,6 +186,7 @@ async function extractMetadataPhase(
         totalWaves,
       };
       win.webContents.send('scan:progress', progress);
+      setDockProgress(win, processed, total);
     }
 
     if (processed % 500 === 0) {
@@ -229,6 +240,16 @@ async function runOrganize(options: OrganizeOptions, win: BrowserWindow): Promis
     "INSERT OR REPLACE INTO operation_progress (session_id,total_files,processed_files,successful_files,error_files,skipped_files,last_processed_id,status,updated_at) VALUES (?,?,0,0,0,0,NULL,'running',datetime('now'))"
   ).run(sessionId, total);
 
+  // Hoist prepared statements out of the inner per-file loop. Previous version
+  // called db.prepare() per row, which the cache handled — but allocating new
+  // PreparedStatement wrappers per file still tax the GC on a 40 K-file run.
+  const stmtSetSkipped   = db.prepare("UPDATE files SET status = 'skipped' WHERE id = ?");
+  const stmtSetOrganized = db.prepare("UPDATE files SET status = 'organized' WHERE id = ?");
+  const stmtSetError     = db.prepare("UPDATE files SET status = 'error', error_message = ? WHERE id = ?");
+  const stmtUpdateOpProgress = db.prepare(
+    "UPDATE operation_progress SET processed_files=?,successful_files=?,error_files=?,skipped_files=?,last_processed_id=?,updated_at=datetime('now') WHERE session_id=?"
+  );
+
   const log = new OperationLog(sessionId, destination, pattern, mode, new Date().toISOString());
   const rate = new RateCalculator();
   const recentErrors: string[] = [];
@@ -248,19 +269,30 @@ async function runOrganize(options: OrganizeOptions, win: BrowserWindow): Promis
       const batch = getFilesForOrganize(sessionId, lastId, 100);
       if (batch.length === 0) break;
 
+      // Pre-create destination directories once per unique parent — saves
+      // a sync mkdirSync call per file (40K files → 40K syscalls → a few
+      // hundred unique dirs).
+      const destPathByFile = new Map<string, string>();
+      const dirsToCreate = new Set<string>();
+      for (const file of batch) {
+        const dp = buildFullDestination(destination, pattern, file);
+        destPathByFile.set(file.id, dp);
+        dirsToCreate.add(path.dirname(dp));
+      }
+      for (const dir of dirsToCreate) {
+        try { fs.mkdirSync(dir, { recursive: true }); } catch { /* surfaces in per-file catch below */ }
+      }
+
       for (const file of batch) {
         if (cancelOrganizeFlag) break;
 
-        const destPath = buildFullDestination(destination, pattern, file);
-        const destDir  = path.dirname(destPath);
+        const destPath = destPathByFile.get(file.id)!;
 
         try {
-          fs.mkdirSync(destDir, { recursive: true });
-
           const finalDest = resolveConflict(destPath, conflictStrategy as 'rename' | 'skip' | 'overwrite');
           if (finalDest === null) {
             skipped++;
-            db.prepare("UPDATE files SET status = 'skipped' WHERE id = ?").run(file.id);
+            stmtSetSkipped.run(file.id);
             log.write({ src: file.source_path, dest: destPath, status: 'skip' });
             processed++;
             continue;
@@ -274,13 +306,13 @@ async function runOrganize(options: OrganizeOptions, win: BrowserWindow): Promis
 
           successful++;
           bytesProcessed += file.size || 0;
-          db.prepare("UPDATE files SET status = 'organized' WHERE id = ?").run(file.id);
+          stmtSetOrganized.run(file.id);
           log.write({ src: file.source_path, dest: finalDest, status: 'ok' });
 
         } catch (err: any) {
           errors++;
           const errMsg = humanizeFileError(err);
-          db.prepare("UPDATE files SET status = 'error', error_message = ? WHERE id = ?").run(errMsg, file.id);
+          stmtSetError.run(errMsg, file.id);
           log.write({ src: file.source_path, dest: destPath, status: 'error', error: errMsg });
           if (recentErrors.length < MAX_ERRORS_CAP) recentErrors.push(`${file.filename}: ${errMsg}`);
           logger.warn('organize', `File error: ${file.filename} → ${errMsg}`, `src=${file.source_path}`);
@@ -308,12 +340,11 @@ async function runOrganize(options: OrganizeOptions, win: BrowserWindow): Promis
           totalBytes: totalSize,
         };
         win.webContents.send('organize:progress', progress);
+        setDockProgress(win, processed, total);
       }
 
       if (processed % 500 === 0) {
-        db.prepare(
-          "UPDATE operation_progress SET processed_files=?,successful_files=?,error_files=?,skipped_files=?,last_processed_id=?,updated_at=datetime('now') WHERE session_id=?"
-        ).run(processed, successful, errors, skipped, lastId, sessionId);
+        stmtUpdateOpProgress.run(processed, successful, errors, skipped, lastId, sessionId);
         const mem = process.memoryUsage();
         const batchNum = Math.floor(processed / 100); // batches of 100
         logger.info('organize', `${processed}/${total} batch=#${batchNum} | ok=${successful} err=${errors} skip=${skipped} | heap=${Math.round(mem.heapUsed/1024/1024)}MB rss=${Math.round(mem.rss/1024/1024)}MB`);
@@ -343,6 +374,11 @@ async function runOrganize(options: OrganizeOptions, win: BrowserWindow): Promis
       win.webContents.send('organize:complete', result);
     }
 
+    clearDockProgress(win);
+    if (errors > 0) {
+      setDockBadge(String(Math.min(errors, 99)));
+    }
+
     organizeRunning = false;
   }
 }
@@ -355,6 +391,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     if (scanRunning) throw new Error('Scan already running');
     scanRunning = true;
     cancelScan = false;
+    clearDockBadge();
     const sessionId = crypto.randomUUID();
 
     const win = getWindow();
@@ -365,15 +402,20 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       sourceFolders: options.sourceFolders,
       scanDepth: options.scanDepth,
       scanSpeed: options.scanSpeed,
+      mode: options.mode,
     });
 
-    logger.info('scan', `Session ${sessionId} — ${options.sourceFolders.length} folder(s), depth=${options.scanDepth}, speed=${options.scanSpeed}`);
+    logger.info('scan', `Session ${sessionId} — ${options.sourceFolders.length} folder(s), depth=${options.scanDepth}, speed=${options.scanSpeed}, mode=${options.mode}`);
 
-    // Safety net: cancel scan after 30 minutes
+    // Safety net: cancel scan after 30 minutes. If the underlying op is
+    // stuck on a network drive (ExifTool worker hung waiting for I/O),
+    // setting cancelScan alone won't unblock it — force-close ExifTool so
+    // the in-flight tool.read() rejects.
     const scanTimeout = setTimeout(() => {
       logger.warn('scan', 'Scan exceeded 30-minute safety limit — cancelling');
       cancelScan = true;
       requestScanCancel();
+      closeExiftool().catch(() => { /* best-effort */ });
     }, 30 * 60 * 1000);
 
     setImmediate(async () => {
@@ -389,15 +431,18 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
             phase: 'discovering', discovered: 0, processed: 0, total: 0,
             eta: null, filesPerSecond: 0, wave: 0, totalWaves: 0,
           } as ScanProgress);
+          setDockProgress(win, 0, 0); // indeterminate while discovering
         }
 
-        const enabledCategories = (options.enabledCategories ?? getSettings().enabledFileCategories) as FileCategory[];
+        const enabledCategories = (
+          options.enabledCategories ?? defaultCategoriesForMode(options.mode)
+        ) as FileCategory[];
         const { totalFiles, totalSize } = await scanDirectory(options.sourceFolders, sessionId, 0, win, enabledCategories);
         logger.info('scan', `Discovery complete: ${totalFiles} files`);
 
         // Phase 2: Metadata extraction
         if (totalFiles > 0 && !cancelScan) {
-          await extractMetadataPhase(sessionId, options.scanDepth, options.scanSpeed, totalFiles, win);
+          await extractMetadataPhase(sessionId, options.scanDepth, options.scanSpeed, totalFiles, win, options.mode);
         }
 
         completeScanSession(sessionId, totalFiles, totalSize);
@@ -414,6 +459,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       } finally {
         clearTimeout(scanTimeout);
         scanRunning = false;
+        clearDockProgress(win);
       }
     });
 
@@ -452,12 +498,45 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     await shell.openPath(LOG_DIR);
   });
 
+  // Whitelisted prefixes the renderer is allowed to "open" via the OS. We
+  // never want a compromised renderer (or stale state) to convince main to
+  // shell-exec an arbitrary executable; restrict to user-facing locations
+  // it touches during normal use.
+  function isAllowedOpenPath(p: string): boolean {
+    if (!p || typeof p !== 'string') return false;
+    if (p.startsWith('http://') || p.startsWith('https://')) return true; // for openExternal-style links (purchase URL)
+    const settings = getSettings();
+    const homeBased = [
+      app.getPath('pictures'),
+      app.getPath('documents'),
+      app.getPath('downloads'),
+      app.getPath('home'),
+      app.getPath('desktop'),
+      path.join(os.homedir(), '.photomove'),
+      LOG_DIR,
+    ];
+    const recents = settings.recentFolders ?? [];
+    const lastDest = settings.lastDestination ? [settings.lastDestination] : [];
+    const allowedRoots = [...homeBased, ...recents, ...lastDest].filter(Boolean);
+    const resolved = path.resolve(p);
+    return allowedRoots.some(root => {
+      const r = path.resolve(root);
+      return resolved === r || resolved.startsWith(r + path.sep);
+    });
+  }
+
   ipcMain.handle('organize:start', async (_event, options: OrganizeOptions) => {
     if (organizeRunning) throw new Error('Organize already running');
+    clearDockBadge();
 
     if (!isPro()) {
       const { count } = getOrganizeTotals(options.sessionId);
-      if (count > 100) throw new Error('FREE_TIER_LIMIT: Free tier limited to 100 files per session. Upgrade to Pro to organize unlimited files.');
+      if (count > FREE_FILE_CAP) {
+        throw proRequiredError(
+          'unlimited_organize',
+          `Free tier organizes up to ${FREE_FILE_CAP.toLocaleString()} files per session — this scan has ${count.toLocaleString()}. Upgrade to Pro for unlimited.`
+        );
+      }
     }
 
     organizeRunning = true;
@@ -468,11 +547,18 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
     logger.info('organize', `Session ${options.sessionId} — dest="${options.destination}" pattern="${options.pattern}" mode=${options.mode}`);
 
-    // Safety net: cancel organize after 4 hours
+    // Safety net: cancel organize after 4 hours.
     const organizeTimeout = setTimeout(() => {
       logger.warn('organize', 'Organize exceeded 4-hour safety limit — cancelling');
       cancelOrganizeFlag = true;
     }, 4 * 60 * 60 * 1000);
+
+    // Pre-flight: if ExifTool died mid-scan, warn so the user knows some
+    // files may have status='ready' with only filename/filesystem-derived
+    // dates (lower accuracy than EXIF).
+    if (isExiftoolDead()) {
+      logger.warn('organize', `Session ${options.sessionId} starting with stale-EXIF data (worker died during scan)`);
+    }
 
     setImmediate(async () => {
       try {
@@ -483,10 +569,20 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         if (!win.isDestroyed()) {
           win.webContents.send('organize:error', String(err));
         }
+        clearDockProgress(win);
       } finally {
         clearTimeout(organizeTimeout);
       }
     });
+  });
+
+  ipcMain.handle('organize:dryRun', async (_event, options: OrganizeOptions) => {
+    // Dry-run is read-only and pre-empts any pre-organize gating decisions.
+    // We deliberately do NOT enforce the FREE_FILE_CAP here — users on the
+    // free tier should still be allowed to *see* the proposed tree for their
+    // entire library (that's the conversion moment); the cap applies at the
+    // commit step in `organize:start`.
+    return dryRunOrganize(options);
   });
 
   ipcMain.handle('organize:cancel', async () => {
@@ -499,6 +595,29 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
     const entries = readLogEntries(sessionId);
     const okEntries = entries.filter(e => e.status === 'ok');
+
+    // Confirm before performing destructive work. For 'copy' mode this
+    // unlinks files at the destination; for 'move' it moves them back to
+    // the original source path (which may overwrite anything that's there).
+    // CLAUDE.md: "Never auto-delete files without explicit user confirmation."
+    const win = getWindow();
+    if (win) {
+      const { response } = await dialog.showMessageBox(win, {
+        type: 'warning',
+        buttons: ['Cancel', `Undo ${okEntries.length} file${okEntries.length !== 1 ? 's' : ''}`],
+        defaultId: 0,
+        cancelId: 0,
+        title: 'Undo Organize',
+        message: `Undo ${okEntries.length} ${mode === 'copy' ? 'copies' : 'moves'}?`,
+        detail: mode === 'copy'
+          ? 'PixelPusher will DELETE the organized copies from your destination folder. Your original files at the source location are untouched.'
+          : 'PixelPusher will MOVE the organized files back to their original source paths. Any file currently at those paths may be overwritten.',
+      });
+      if (response !== 1) {
+        logger.info('organize', `Undo ${sessionId} — user cancelled`);
+        return { undone: 0, errors: 0, cancelled: true };
+      }
+    }
 
     let undone = 0;
     let errors = 0;
@@ -532,7 +651,18 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   });
 
   ipcMain.handle('shell:openPath', async (_event, filePath: string) => {
-    await shell.openPath(filePath);
+    // Defense-in-depth: even with context isolation, validate the path before
+    // shelling out. A compromised or stale renderer should not be able to
+    // open an arbitrary executable on the user's machine.
+    if (!isAllowedOpenPath(filePath)) {
+      logger.warn('shell', `Refused openPath outside allowlist: ${filePath}`);
+      return;
+    }
+    if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
+      await shell.openExternal(filePath);
+    } else {
+      await shell.openPath(filePath);
+    }
   });
 
   // ── Hash ──────────────────────────────────────────────────────────────────
@@ -545,11 +675,20 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     const win = getWindow();
     if (!win) { hashRunning = false; throw new Error('No window'); }
 
-    logger.info('hash', `Starting pHash for session ${sessionId}`);
+    // Mode-aware dispatch:
+    //   photos       → perceptual hash (sharp DCT) + hamming-distance clustering
+    //   datahoarder  → SHA-256 byte hash + exact-match grouping
+    // Same IPC surface, same UI, different algorithms underneath.
+    const sessionMode = getScanSessionMode(sessionId);
+    const isByteHashMode = sessionMode === 'datahoarder';
+
+    logger.info('hash', `Starting ${isByteHashMode ? 'byte-hash (SHA-256)' : 'pHash'} for session ${sessionId}`);
 
     setImmediate(async () => {
       try {
-        const total = getHashableCount(sessionId);
+        const total = isByteHashMode
+          ? getByteHashableCount(sessionId)
+          : getHashableCount(sessionId);
         const rate  = new RateCalculator();
         let processed = 0;
         let lastId    = '';
@@ -557,19 +696,47 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         while (true) {
           if (cancelHashFlag) break;
 
-          const batch = getHashableFiles(sessionId, lastId, BATCH_SIZE_HASH);
+          const batch = isByteHashMode
+            ? getByteHashableFiles(sessionId, lastId, BATCH_SIZE_HASH)
+            : getHashableFiles(sessionId, lastId, BATCH_SIZE_HASH);
           if (batch.length === 0) break;
 
-          const results = await Promise.allSettled(
-            batch.map(f => computePHash(f.source_path))
-          );
+          if (isByteHashMode) {
+            const results = await Promise.allSettled(
+              batch.map(f => computeByteHash(f.source_path))
+            );
+            const updates = results.map((r, i) => ({
+              id: batch[i].id,
+              byte_hash: r.status === 'fulfilled' ? r.value : null,
+            }));
+            updateFileByteHashBatch(updates);
+            // Mark unreadable files as 'error' so they aren't retried on
+            // the next hash run (getByteHashableFiles filters status='ready').
+            // Without this, a permanently broken file would loop forever
+            // through the hash queue.
+            const failedIds = updates.filter(u => u.byte_hash === null).map(u => u.id);
+            if (failedIds.length > 0) {
+              const db = getDb();
+              const stmt = db.prepare("UPDATE files SET status = 'error', error_message = 'byte_hash_failed' WHERE id = ?");
+              db.transaction(() => { for (const id of failedIds) stmt.run(id); })();
+            }
+          } else {
+            const results = await Promise.allSettled(
+              batch.map(f => computePHash(f.source_path))
+            );
+            const updates = results.map((r, i) => ({
+              id: batch[i].id,
+              phash: r.status === 'fulfilled' ? r.value : null,
+            }));
+            updateFileHashBatch(updates);
+            const failedIds = updates.filter(u => u.phash === null).map(u => u.id);
+            if (failedIds.length > 0) {
+              const db = getDb();
+              const stmt = db.prepare("UPDATE files SET status = 'error', error_message = 'phash_failed' WHERE id = ?");
+              db.transaction(() => { for (const id of failedIds) stmt.run(id); })();
+            }
+          }
 
-          const updates = results.map((r, i) => ({
-            id:    batch[i].id,
-            phash: r.status === 'fulfilled' ? r.value : null,
-          }));
-
-          updateFileHashBatch(updates);
           processed += batch.length;
           lastId     = batch[batch.length - 1].id;
           rate.update(processed);
@@ -584,6 +751,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
               eta: rate.getETA(total - processed),
             };
             win.webContents.send('hash:progress', progress);
+            setDockProgress(win, processed, total);
           }
 
           if (processed % 500 === 0) {
@@ -593,9 +761,14 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
           }
         }
 
-        // Auto-run dupe detection after hashing
-        const dupeGroups = cancelHashFlag ? 0 : await detectDuplicates(sessionId);
-        logger.info('hash', `Hashing complete: ${processed} hashed, ${dupeGroups} dupe groups`);
+        // Auto-run dupe detection after hashing — same routine for both modes,
+        // different scorer inside.
+        const dupeGroups = cancelHashFlag
+          ? 0
+          : isByteHashMode
+            ? await detectByteHashDuplicates(sessionId)
+            : await detectDuplicates(sessionId);
+        logger.info('hash', `Hashing complete: ${processed} hashed, ${dupeGroups} dupe groups (mode=${sessionMode})`);
 
         if (!win.isDestroyed()) {
           win.webContents.send('hash:complete', { sessionId, hashed: processed, dupeGroups });
@@ -607,6 +780,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
         }
       } finally {
         hashRunning = false;
+        clearDockProgress(win);
       }
     });
   });
@@ -618,9 +792,15 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   // ── Dupes ─────────────────────────────────────────────────────────────────
 
   ipcMain.handle('dupe:getGroups', async (_event, sessionId: string, page: number, pageSize: number) => {
-    const effectiveSize = isPro() ? pageSize : Math.min(pageSize, 5);
-    const result = await getDupeGroupsPaginated(sessionId, page, effectiveSize);
-    if (!isPro()) result.total = Math.min(result.total, 5);
+    const result = await getDupeGroupsPaginated(sessionId, page, pageSize);
+    if (!isPro()) {
+      // Free-tier slicing. Enforce the cap so a hand-crafted page request
+      // (e.g. page=9999, pageSize=1) can never read past index FREE_DUPE_GROUPS_CAP.
+      const offset = (page - 1) * pageSize;
+      const remaining = Math.max(0, FREE_DUPE_GROUPS_CAP - offset);
+      result.total = Math.min(result.total, FREE_DUPE_GROUPS_CAP);
+      result.groups = result.groups.slice(0, Math.min(remaining, result.groups.length));
+    }
     return result;
   });
 
@@ -668,6 +848,31 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     const groups = db.prepare(
       "SELECT id FROM dupe_groups WHERE scan_session_id = ? AND status = 'pending'"
     ).all(sessionId) as { id: string }[];
+
+    // Destructive actions get a final confirmation in main, regardless of
+    // what the renderer did. CLAUDE.md: "Never auto-delete files without
+    // explicit user confirmation."
+    if ((action === 'delete' || action === 'quarantine') && groups.length > 0) {
+      const win = getWindow();
+      if (win) {
+        const verb = action === 'delete' ? 'PERMANENTLY DELETE' : 'move to quarantine';
+        const { response } = await dialog.showMessageBox(win, {
+          type: 'warning',
+          buttons: ['Cancel', `Yes, ${action === 'delete' ? 'delete' : 'quarantine'} duplicates`],
+          defaultId: 0,
+          cancelId: 0,
+          title: `Auto-resolve ${groups.length} duplicate groups`,
+          message: `${verb.charAt(0).toUpperCase() + verb.slice(1)} non-keeper files in ${groups.length} duplicate groups?`,
+          detail: action === 'delete'
+            ? 'Files will be removed from your disk and cannot be recovered. The "best" file in each group is kept.'
+            : 'Non-keeper files will be moved to ~/.photomove/quarantine — recoverable, but they won\'t appear in your library again.',
+        });
+        if (response !== 1) {
+          logger.info('dupes', `Auto-resolve ${sessionId} (action=${action}) cancelled by user`);
+          return { resolved: 0, cancelled: true };
+        }
+      }
+    }
 
     const quarantineDir = path.join(os.homedir(), '.photomove', 'quarantine', sessionId);
     if (action === 'quarantine') fs.mkdirSync(quarantineDir, { recursive: true });
@@ -786,6 +991,39 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     }
   });
 
+  // ── Thumbnails ────────────────────────────────────────────────────────────
+  // Renderer can't <img src="file://…"> because the CSP locks img-src to
+  // 'self' data: blob:. We serve thumbnails through IPC instead: main reads
+  // the file, downsamples via sharp, returns a data: URL the renderer can
+  // drop straight into an <img>.
+  ipcMain.handle('image:getThumbnail', async (_event, filePath: string, maxSize = 240) => {
+    if (!filePath || typeof filePath !== 'string') return null;
+    const allowed = isAllowedOpenPath(filePath) || (() => {
+      // Also allow any file in a recent source folder (typical scan location)
+      const settings = getSettings();
+      const r = path.resolve(filePath);
+      return (settings.lastSourceFolders ?? []).some(src => {
+        const sr = path.resolve(src);
+        return r === sr || r.startsWith(sr + path.sep);
+      });
+    })();
+    if (!allowed) return null;
+    try {
+      // Lazy-require sharp so loading the IPC module doesn't drag it in
+      // on app startup.
+      const sharp = require('sharp');
+      const size = Math.max(32, Math.min(512, Math.floor(maxSize) || 240));
+      const out = await sharp(filePath)
+        .rotate() // honor EXIF orientation
+        .resize(size, size, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 70 })
+        .toBuffer();
+      return `data:image/jpeg;base64,${out.toString('base64')}`;
+    } catch {
+      return null;
+    }
+  });
+
   // ── Native theme ──────────────────────────────────────────────────────────
 
   nativeTheme.on('updated', () => {
@@ -803,16 +1041,27 @@ function generateReportHtml(
   const fmt = (n: number) => (n ?? 0).toLocaleString();
   const now = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
 
+  // HTML-escape any user-derived text before injecting into the report — a
+  // filename like `<script>x</script>.jpg` or an EXIF error containing
+  // markup would otherwise execute when the PDF renderer loads the page.
+  const esc = (s: string | null | undefined): string =>
+    String(s ?? '').replace(/[&<>"']/g, ch => (
+      ch === '&' ? '&amp;' :
+      ch === '<' ? '&lt;'  :
+      ch === '>' ? '&gt;'  :
+      ch === '"' ? '&quot;': '&#39;'
+    ));
+
   const formatRows = byFormat.map(r =>
-    `<tr><td>${r.format.toUpperCase()}</td><td style="text-align:right">${fmt(r.cnt)}</td></tr>`
+    `<tr><td>${esc(r.format).toUpperCase()}</td><td style="text-align:right">${fmt(r.cnt)}</td></tr>`
   ).join('');
 
   const yearRows = byYear.map(r =>
-    `<tr><td>${r.yr}</td><td style="text-align:right">${fmt(r.cnt)}</td></tr>`
+    `<tr><td>${esc(r.yr)}</td><td style="text-align:right">${fmt(r.cnt)}</td></tr>`
   ).join('');
 
   const errorRows = errors.map(r =>
-    `<tr><td style="font-family:monospace;font-size:11px">${r.filename}</td><td>${r.error_message ?? ''}</td></tr>`
+    `<tr><td style="font-family:monospace;font-size:11px">${esc(r.filename)}</td><td>${esc(r.error_message)}</td></tr>`
   ).join('');
 
   return `<!DOCTYPE html>
@@ -833,7 +1082,7 @@ function generateReportHtml(
 </style>
 </head><body>
 <h1>PixelPusher — Organization Report</h1>
-<div class="meta">Generated ${now} &nbsp;·&nbsp; Session ${sessionId.slice(0, 8)}…</div>
+<div class="meta">Generated ${esc(now)} &nbsp;·&nbsp; Session ${esc(sessionId.slice(0, 8))}…</div>
 
 <h2>Summary</h2>
 <div class="stats">
